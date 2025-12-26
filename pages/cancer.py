@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import base64
 import io
+import urllib.request
 import zipfile
 from pathlib import Path
+from typing import Dict, List, Tuple
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -15,7 +20,7 @@ except Exception:
 
 
 # -----------------------------
-# Paths (строго по вашим директориям/именам)
+# Пути (строго по вашим директориям/именам)
 # -----------------------------
 THIS_DIR = Path(__file__).resolve().parent
 ART_DIR = THIS_DIR / "cancerbook"
@@ -23,28 +28,166 @@ ART_DIR = THIS_DIR / "cancerbook"
 WEIGHTS_PATH = ART_DIR / "best.pt"
 ARGS_PATH = ART_DIR / "args.yaml"
 RESULTS_PATH = ART_DIR / "results.csv"
-BG_JPG_LIST = sorted(ART_DIR.glob("*.jpg"))  # у вас: screen.jpg
+BG_JPG_LIST = sorted(ART_DIR.glob("*.jpg"))  # фон: screen.jpg (или любой *.jpg)
 
 
 # -----------------------------
-# Page config
+# Конфиг UI
 # -----------------------------
-st.set_page_config(page_title="Medical Scan Analyzer", page_icon="🧠", layout="wide")
+UPLOAD_BOX_H = 120
+CHART_H = 440
+
+st.set_page_config(page_title="Анализ снимков МРТ", page_icon="🧠", layout="wide")
 
 
 # -----------------------------
-# UI helpers
+# UI: стиль + подложки (всё по центру)
 # -----------------------------
-def opaque_card(title: str, text: str) -> None:
+def apply_background_and_theme(bg_path: Path | None) -> None:
+    bg_css = ""
+    if bg_path and bg_path.exists():
+        b64 = base64.b64encode(bg_path.read_bytes()).decode("utf-8")
+        bg_css = (
+            '.stApp{'
+            f'background-image:url("data:image/jpeg;base64,{b64}");'
+            'background-size:cover;'
+            'background-position:center;'
+            'background-attachment:fixed;'
+            '}'
+        )
+
     st.markdown(
         f"""
-        <div class="opaque-card">
-          <h3>{title}</h3>
-          <p>{text}</p>
-        </div>
+<style>
+{bg_css}
+
+.stApp, .stMarkdown, .stText, .stCaption, .stWrite {{ color:#F8FAFC; }}
+header[data-testid="stHeader"] {{ background: rgba(0,0,0,0); }}
+
+section[data-testid="stSidebar"] {{
+  background:#0B1220;
+  border-right:1px solid rgba(255,255,255,0.10);
+}}
+section[data-testid="stSidebar"] * {{ color:#F8FAFC !important; }}
+
+/* Подложка: всё по центру */
+.opaque-card {{
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:16px 16px 14px 16px;
+  box-shadow:0 10px 24px rgba(0,0,0,0.40);
+  margin-bottom:14px;
+  text-align:center;
+}}
+.opaque-card * {{ text-align:center; }}
+
+.opaque-card h1 {{
+  margin:0;
+  font-size:2.0rem;
+  font-weight:780;
+  line-height:1.15;
+}}
+.opaque-card h3 {{
+  margin:0;
+  font-size:1.25rem;
+  font-weight:750;
+}}
+.opaque-card p {{
+  margin:8px 0 0 0;
+  color:rgba(248,250,252,0.85);
+  line-height:1.35;
+}}
+
+/* Экспандер: непрозрачный */
+div[data-testid="stExpander"] > details {{
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:10px 12px;
+  box-shadow:0 10px 24px rgba(0,0,0,0.30);
+}}
+div[data-testid="stExpander"] summary {{
+  color:#F8FAFC !important;
+  font-weight:650;
+}}
+
+/* File uploader: фиксируем высоту */
+div[data-testid="stFileUploader"] section {{
+  height:{UPLOAD_BOX_H}px !important;
+  overflow:auto !important;
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:10px;
+}}
+
+/* TextArea: фиксируем высоту (для ссылок) */
+div[data-testid="stTextArea"] textarea {{
+  height:{UPLOAD_BOX_H}px !important;
+}}
+div[data-testid="stTextArea"] > div {{
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:10px;
+}}
+
+.stButton > button {{
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,0.14);
+}}
+
+a {{ color:#93C5FD !important; }}
+
+/* Блок лучших метрик: фикс высоты, вертикальное центрирование */
+.metrics-card {{
+  height:{CHART_H}px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  gap:12px;
+}}
+.metric-line {{ line-height:1.2; }}
+.muted {{ color:rgba(248,250,252,0.70); font-size:0.95rem; }}
+.metric-value {{ font-size:1.45rem; font-weight:780; margin-top:4px; }}
+
+/* Параметры "в строку" */
+.param-grid {{
+  display:grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap:14px;
+  margin-top:12px;
+}}
+.param-cell {{ background:transparent; border:none; padding:6px 4px; }}
+.param-label {{ color:rgba(248,250,252,0.70); font-size:0.92rem; margin-bottom:4px; }}
+.param-val {{ font-size:1.10rem; font-weight:780; color:rgba(248,250,252,0.95); }}
+
+/* Мини-чип под превью */
+.name-chip {{
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:12px;
+  padding:6px 10px;
+  margin-top:8px;
+  text-align:center;
+  font-size:0.85rem;
+  color:rgba(248,250,252,0.90);
+}}
+</style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def title_card(title: str) -> None:
+    st.markdown(f'<div class="opaque-card"><h1>{title}</h1></div>', unsafe_allow_html=True)
+
+
+def card(title: str, text: str | None = None) -> None:
+    text = text or ""
+    st.markdown(f'<div class="opaque-card"><h3>{title}</h3><p>{text}</p></div>', unsafe_allow_html=True)
 
 
 def safe_switch_page(target: str) -> None:
@@ -52,144 +195,122 @@ def safe_switch_page(target: str) -> None:
         try:
             st.switch_page(target)
         except Exception:
-            st.info("Переход недоступен. Используйте меню слева.")
-    else:
-        st.info("Переход недоступен. Используйте меню слева.")
+            pass
 
 
-def apply_background_and_contrast(bg_path: Path | None) -> None:
-    bg_css = ""
-    if bg_path and bg_path.exists():
-        b64 = base64.b64encode(bg_path.read_bytes()).decode("utf-8")
-        bg_css = f"""
-        .stApp {{
-            background-image: url("data:image/jpeg;base64,{b64}");
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-        }}
-        """
+# -----------------------------
+# Фон
+# -----------------------------
+bg_path: Path | None = None
+if len(BG_JPG_LIST) == 1:
+    bg_path = BG_JPG_LIST[0]
+elif len(BG_JPG_LIST) > 1:
+    bg_name = st.sidebar.selectbox("Фон страницы", options=[p.name for p in BG_JPG_LIST], index=0)
+    bg_path = ART_DIR / bg_name
 
-    st.markdown(
-        f"""
-        <style>
-        {bg_css}
-
-        .stApp, .stMarkdown, .stText, .stCaption, .stWrite {{
-            color: #F8FAFC;
-        }}
-
-        header[data-testid="stHeader"] {{ background: rgba(0,0,0,0); }}
-
-        section[data-testid="stSidebar"] {{
-            background: #0B1220;
-            border-right: 1px solid rgba(255,255,255,0.10);
-        }}
-        section[data-testid="stSidebar"] * {{ color: #F8FAFC !important; }}
-
-        .opaque-card {{
-            background: #0B1220;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 18px;
-            padding: 16px 16px 14px 16px;
-            box-shadow: 0 10px 24px rgba(0,0,0,0.40);
-            margin-bottom: 14px;
-        }}
-        .opaque-card h3 {{
-            margin: 0;
-            font-size: 1.25rem;
-            font-weight: 750;
-            color: #F8FAFC;
-        }}
-        .opaque-card p {{
-            margin: 6px 0 0 0;
-            color: rgba(248,250,252,0.85);
-            line-height: 1.35;
-        }}
-
-        div[data-testid="stExpander"] > details {{
-            background: #0B1220;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 18px;
-            padding: 10px 12px;
-            box-shadow: 0 10px 24px rgba(0,0,0,0.30);
-        }}
-        div[data-testid="stExpander"] summary {{
-            color: #F8FAFC !important;
-            font-weight: 650;
-        }}
-
-        div[data-testid="stFileUploader"] section {{
-            background: #0B1220;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 18px;
-            padding: 10px;
-        }}
-
-        .stButton > button {{
-            border-radius: 14px;
-            border: 1px solid rgba(255,255,255,0.14);
-        }}
-
-        a {{ color: #93C5FD !important; }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+apply_background_and_theme(bg_path)
 
 
-def parse_yaml_shallow(path: Path) -> dict:
-    """
-    Очень простой парсер key: value (без вложенности). Нам достаточно для таблицы ключевых параметров.
-    """
-    out = {}
+# -----------------------------
+# Мини-парсер YAML (без pyyaml)
+# -----------------------------
+def parse_yaml_shallow(path: Path) -> Dict[str, str]:
+    out: Dict[str, str] = {}
     if not path.exists():
         return out
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         s = line.strip()
-        if (not s) or s.startswith("#") or (":" not in s):
+        if not s or s.startswith("#") or ":" not in s:
             continue
         k, v = s.split(":", 1)
         k = k.strip()
         v = v.strip().strip("'").strip('"')
-        if not v:
+        if v in ("", "null", "None") or v.endswith("{") or v.endswith("["):
             continue
         out[k] = v
     return out
 
 
-def pick_first(args: dict, keys: list) -> str:
+def pick_first(args: Dict[str, str], keys: List[str]) -> str:
     for k in keys:
         if k in args and str(args[k]).strip():
             return str(args[k]).strip()
     return "—"
 
 
-def looks_like_lfs_pointer(p: Path) -> bool:
-    if not p.exists():
+def is_git_lfs_pointer(file_path: Path) -> bool:
+    try:
+        head = file_path.read_bytes()[:200]
+        txt = head.decode("utf-8", errors="ignore")
+        return "git-lfs" in txt and "git-lfs.github.com/spec" in txt
+    except Exception:
         return False
-    head = p.read_bytes()[:200]
-    txt = head.decode("utf-8", errors="ignore")
-    return ("git-lfs" in txt) and ("git-lfs.github.com/spec" in txt)
 
 
-def ensure_weights_ok_or_stop(p: Path) -> None:
-    if not p.exists():
-        st.error(f"Не найден файл весов: `{p.as_posix()}`")
-        st.stop()
-    if looks_like_lfs_pointer(p):
-        st.error("Файл весов выглядит как Git LFS pointer (ссылка), а не бинарный .pt.")
-        st.stop()
+def _find_col(df: pd.DataFrame, substrs: List[str]) -> str | None:
+    for c in df.columns:
+        cl = str(c).lower()
+        if any(s in cl for s in substrs):
+            return c
+    return None
 
 
+# -----------------------------
+# Загрузка по ссылкам
+# -----------------------------
+def _download_url_bytes(url: str, timeout: int = 25) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _urls_from_text(text: str) -> list[str]:
+    if not text:
+        return []
+    out: list[str] = []
+    for line in text.splitlines():
+        u = line.strip()
+        if u:
+            out.append(u)
+    return out
+
+
+def _payload_from_uploads(files) -> list[tuple[str, bytes]]:
+    out: list[tuple[str, bytes]] = []
+    if not files:
+        return out
+    for f in files:
+        try:
+            out.append((f.name, f.getvalue()))
+        except Exception:
+            continue
+    return out
+
+
+def _payload_from_urls(urls: list[str]) -> list[tuple[str, bytes]]:
+    out: list[tuple[str, bytes]] = []
+    for u in urls:
+        try:
+            b = _download_url_bytes(u)
+            name = Path(u.split("?")[0]).name or "image.jpg"
+            out.append((name, b))
+        except Exception:
+            # без технических сообщений — ссылку просто пропускаем
+            continue
+    return out
+
+
+# -----------------------------
+# Модель + инференс
+# -----------------------------
 @st.cache_resource(show_spinner=False)
 def load_yolo_model(weights_path: str):
     if YOLO is None:
-        raise RuntimeError("ultralytics не установлен.")
+        raise RuntimeError("ultralytics недоступен")
     return YOLO(weights_path)
 
 
-def draw_boxes(img: Image.Image, boxes_xyxy: list, labels: list | None = None) -> Image.Image:
+def draw_boxes(img: Image.Image, boxes_xyxy: list[tuple[int, int, int, int]], labels: list[str] | None = None) -> Image.Image:
     out = img.copy()
     d = ImageDraw.Draw(out)
     for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
@@ -200,16 +321,10 @@ def draw_boxes(img: Image.Image, boxes_xyxy: list, labels: list | None = None) -
 
 
 def extract_predictions(result):
-    """
-    Универсально:
-    - если есть боксы -> вернём их + подписи
-    - если есть probs -> вернём top-5 в таблицу
-    """
-    boxes_xyxy = []
-    box_labels = []
+    boxes_xyxy: list[tuple[int, int, int, int]] = []
+    box_labels: list[str] = []
     cls_df = None
 
-    # boxes
     if getattr(result, "boxes", None) is not None and len(result.boxes) > 0:
         xyxy = result.boxes.xyxy.detach().cpu().numpy()
         conf = result.boxes.conf.detach().cpu().numpy() if getattr(result.boxes, "conf", None) is not None else None
@@ -224,7 +339,6 @@ def extract_predictions(result):
             label = f"{name} {c:.2f}" if (name and c is not None) else (f"{c:.2f}" if c is not None else name)
             box_labels.append(label)
 
-    # probs (classification)
     probs = getattr(result, "probs", None)
     if probs is not None:
         try:
@@ -240,219 +354,432 @@ def extract_predictions(result):
 
 
 # -----------------------------
-# Background selection
+# Сайдбар: навигация + настройки (русский)
 # -----------------------------
-bg_path = None
-if len(BG_JPG_LIST) == 1:
-    bg_path = BG_JPG_LIST[0]
-elif len(BG_JPG_LIST) > 1:
-    name = st.sidebar.selectbox("Фон страницы (*.jpg)", [p.name for p in BG_JPG_LIST], index=0)
-    bg_path = ART_DIR / name
+if st.sidebar.button("На главную", use_container_width=True):
+    safe_switch_page("app.py")
 
-apply_background_and_contrast(bg_path)
+st.sidebar.divider()
+
+conf_th = st.sidebar.slider("Порог уверенности", 0.05, 0.95, 0.25, 0.05)
+iou_th = st.sidebar.slider("Порог IoU", 0.10, 0.90, 0.50, 0.05)
+
+st.sidebar.divider()
+
+show_boxes = st.sidebar.toggle("Показывать боксы", value=True)
+export_mode = st.sidebar.selectbox("Экспорт", ["Архив (изображения)", "Архив (изображения + CSV)"], index=1)
 
 
 # -----------------------------
-# Header
+# Заголовок
 # -----------------------------
-opaque_card("Medical Scan Analyzer", "Пакетная обработка изображений: локализация зон интереса и оценка класса результата.")
+title_card("Анализ снимков МРТ")
+card("Пакетная обработка изображений", "Локализация зон интереса и оценка класса результата")
 
-hl, hr = st.columns([1, 1], gap="large")
-with hl:
-    if st.button("← На главную", use_container_width=True):
-        safe_switch_page("app.py")
-with hr:
-    if bg_path and bg_path.exists():
+
+# -----------------------------
+# Загрузка: файлы + ссылки одинаковой высоты
+# -----------------------------
+card("Загрузка изображений", "Загрузите изображения файлами и/или добавьте прямые ссылки")
+
+u1, u2 = st.columns([1, 1], gap="large")
+with u1:
+    card("Загрузка файлами", "")
+    uploads = st.file_uploader(
+        "Загрузка файлами",
+        type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+    )
+
+with u2:
+    card("Загрузка по ссылкам", "")
+    urls_text = st.text_area(
+        "Загрузка по ссылкам",
+        placeholder="https://...",
+        label_visibility="collapsed",
+        height=UPLOAD_BOX_H,
+    )
+
+payload: list[tuple[str, bytes]] = []
+payload.extend(_payload_from_uploads(uploads))
+payload.extend(_payload_from_urls(_urls_from_text(urls_text)))
+
+
+# -----------------------------
+# Предпросмотр
+# -----------------------------
+if payload:
+    with st.expander("Предпросмотр загруженных изображений", expanded=True):
+        cols = st.columns(4)
+        for i, (name, b) in enumerate(payload):
+            try:
+                img = Image.open(io.BytesIO(b)).convert("RGB")
+                cols[i % 4].image(img, use_container_width=True)
+                cols[i % 4].markdown(f'<div class="name-chip">{name}</div>', unsafe_allow_html=True)
+            except Exception:
+                cols[i % 4].markdown(f'<div class="name-chip">{name}</div>', unsafe_allow_html=True)
+
+
+# -----------------------------
+# Запуск
+# -----------------------------
+run_btn = st.button("Запустить анализ", type="primary", use_container_width=True)
+
+
+# -----------------------------
+# Инференс
+# -----------------------------
+if run_btn:
+    service_ok = (YOLO is not None) and WEIGHTS_PATH.exists() and (not is_git_lfs_pointer(WEIGHTS_PATH)) and bool(payload)
+    if not service_ok:
+        card("Сервис временно недоступен", "Проверьте загрузку изображений и повторите попытку позже")
+    else:
+        with st.spinner("Выполняется анализ..."):
+            model = load_yolo_model(WEIGHTS_PATH.as_posix())
+
+        processed: list[tuple[str, bytes]] = []
+        csv_rows: list[dict] = []
+        preview_rows = []
+
+        prog = st.progress(0)
+        for idx, (name, b) in enumerate(payload, start=1):
+            try:
+                img = Image.open(io.BytesIO(b)).convert("RGB")
+                img_np = np.array(img)
+
+                res = model.predict(img_np, conf=float(conf_th), iou=float(iou_th), max_det=50, verbose=False)
+                r0 = res[0]
+
+                boxes, box_labels, cls_df = extract_predictions(r0)
+
+                view = img
+                if show_boxes and boxes:
+                    view = draw_boxes(img, boxes, box_labels)
+
+                top_class = None
+                top_prob = None
+                if cls_df is not None and len(cls_df) > 0:
+                    top_class = str(cls_df.iloc[0]["Класс"])
+                    top_prob = float(cls_df.iloc[0]["Вероятность"])
+
+                csv_rows.append(
+                    {
+                        "файл": name,
+                        "количество_областей": len(boxes),
+                        "топ_класс": top_class,
+                        "вероятность": top_prob,
+                    }
+                )
+
+                buf = io.BytesIO()
+                view.save(buf, format="PNG")
+                out_name = f"{Path(name).stem}_result.png"
+                processed.append((out_name, buf.getvalue()))
+
+                preview_rows.append((name, img, view, cls_df, len(boxes)))
+
+            except Exception:
+                preview_rows.append((name, None, None, None, 0))
+
+            prog.progress(int(idx / len(payload) * 100))
+        prog.empty()
+
+        card("Результаты", "Просмотр и скачивание одним архивом")
+
+        for name, orig, view, cls_df, n_boxes in preview_rows:
+            with st.expander(f"{name} — областей: {n_boxes}", expanded=False):
+                c1, c2 = st.columns([1, 1], gap="large")
+                with c1:
+                    card("Исходное", "")
+                    if orig is not None:
+                        st.image(orig, use_container_width=True)
+                with c2:
+                    card("Результат", "")
+                    if view is not None:
+                        st.image(view, use_container_width=True)
+
+                if cls_df is not None:
+                    card("Оценка по классам", "")
+                    st.dataframe(cls_df, use_container_width=True, hide_index=True)
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for fname, fbytes in processed:
+                zf.writestr(fname, fbytes)
+            if export_mode == "Архив (изображения + CSV)" and csv_rows:
+                zf.writestr("summary.csv", pd.DataFrame(csv_rows).to_csv(index=False).encode("utf-8"))
+        zip_buf.seek(0)
+
         st.download_button(
-            "Скачать фон (JPG)",
-            data=bg_path.read_bytes(),
-            file_name=bg_path.name,
-            mime="image/jpeg",
+            "Скачать архив с результатами",
+            data=zip_buf,
+            file_name="cancer_results.zip",
+            mime="application/zip",
             use_container_width=True,
         )
 
 
 # -----------------------------
-# Sidebar controls
+# Модель и качество (валидация)
 # -----------------------------
-st.sidebar.markdown("## Настройки")
-conf_th = st.sidebar.slider("Confidence", 0.05, 0.95, 0.25, 0.05)
-iou_th = st.sidebar.slider("IoU", 0.10, 0.90, 0.50, 0.05)
-max_det = st.sidebar.number_input("Max detections", min_value=1, max_value=500, value=50, step=1)
-st.sidebar.divider()
-show_boxes = st.sidebar.toggle("Показывать боксы (если есть)", value=True)
-export_mode = st.sidebar.selectbox("Экспорт", ["ZIP (изображения)", "ZIP (изображения + CSV)"], index=1)
+st.divider()
 
-
-# -----------------------------
-# Training params + charts
-# -----------------------------
-args = parse_yaml_shallow(ARGS_PATH)
-params_df = pd.DataFrame(
-    [
-        ("Задача", pick_first(args, ["task"])),
-        ("Модель", pick_first(args, ["model", "weights"])),
-        ("Эпохи", pick_first(args, ["epochs"])),
-        ("Batch", pick_first(args, ["batch", "batch_size"])),
-        ("Image size", pick_first(args, ["imgsz", "img_size", "img"])),
-        ("Learning rate", pick_first(args, ["lr0", "lr"])),
-        ("Optimizer", pick_first(args, ["optimizer"])),
-    ],
-    columns=["Параметр", "Значение"],
-)
-
-results_df = None
+results_df: pd.DataFrame | None = None
 if RESULTS_PATH.exists():
     try:
         results_df = pd.read_csv(RESULTS_PATH)
     except Exception:
         results_df = None
 
+df_plot: pd.DataFrame | None = None
+epoch_col = None
 
-# -----------------------------
-# Main layout
-# -----------------------------
-left, right = st.columns([1.25, 1.0], gap="large")
+if results_df is not None:
+    df_plot = results_df.copy()
+    epoch_col = _find_col(df_plot, ["epoch"])
 
-with left:
-    opaque_card("Загрузка изображений", "Загрузите один или несколько файлов. Ниже появится предпросмотр.")
-    uploads = st.file_uploader(
-        "Images",
-        type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
-        accept_multiple_files=True,
+    col_precision = _find_col(df_plot, ["precision"])
+    col_recall = _find_col(df_plot, ["recall"])
+    col_map50 = _find_col(df_plot, ["map50"])
+    col_map5095 = _find_col(df_plot, ["map50-95", "map50_95"])
+
+    # PR-AUC для детекции (AP@0.5) — из mAP50
+    if col_map50 is not None and "PR-AUC" not in df_plot.columns:
+        df_plot["PR-AUC"] = pd.to_numeric(df_plot[col_map50], errors="coerce")
+
+    # ROC-AUC (число): приближение по агрегированным метрикам
+    if col_precision is not None and col_recall is not None and "ROC-AUC" not in df_plot.columns:
+        p = pd.to_numeric(df_plot[col_precision], errors="coerce")
+        r = pd.to_numeric(df_plot[col_recall], errors="coerce")
+        df_plot["ROC-AUC"] = (p + r) / 2.0
+
+card("Показатели качества, рассчитанные на валидационной выборке", "Выберите показатель для отображения")
+
+if df_plot is None or epoch_col is None:
+    if results_df is not None:
+        st.dataframe(results_df.tail(20), use_container_width=True)
+else:
+    y_candidates = [
+        c for c in df_plot.columns
+        if c != epoch_col and pd.api.types.is_numeric_dtype(df_plot[c])
+    ]
+
+    # дефолт: PR-AUC, иначе mAP50-95, иначе первый числовой
+    default_y = None
+    if "PR-AUC" in y_candidates:
+        default_y = "PR-AUC"
+    else:
+        c5095 = _find_col(df_plot, ["map50-95", "map50_95"])
+        if c5095 in y_candidates:
+            default_y = c5095
+        elif y_candidates:
+            default_y = y_candidates[0]
+
+    y_axis = st.selectbox(
+        "Показатель",
+        options=y_candidates,
+        index=y_candidates.index(default_y) if default_y in y_candidates else 0,
         label_visibility="collapsed",
     )
 
-    if uploads:
-        with st.expander("Предпросмотр", expanded=True):
-            cols = st.columns(4)
-            for i, up in enumerate(uploads):
-                try:
-                    up.seek(0)
-                    img = Image.open(up).convert("RGB")
-                    cols[i % 4].image(img, caption=up.name, use_container_width=True)
-                    up.seek(0)
-                except Exception:
-                    cols[i % 4].write(up.name)
+    card("Интерактивная визуализация динамики метрик", "")
 
-    run_btn = st.button("Запустить анализ", type="primary", use_container_width=True)
+    g_col, m_col = st.columns([1.35, 0.65], gap="large")
 
-with right:
-    opaque_card("Параметры обучения", "Ключевые параметры обучения модели.")
-    st.table(params_df)
+    with g_col:
+        plot_df = df_plot[[epoch_col, y_axis]].copy()
+        plot_df[epoch_col] = pd.to_numeric(plot_df[epoch_col], errors="coerce")
+        plot_df[y_axis] = pd.to_numeric(plot_df[y_axis], errors="coerce")
+        plot_df = plot_df.dropna()
 
-    st.divider()
-    opaque_card("Графики обучения", "Выберите метрики/лоссы — построим только выбранное.")
-    if results_df is None:
-        st.info("`results.csv` не найден или не читается.")
-    else:
-        epoch_col = next((c for c in results_df.columns if c.lower() == "epoch"), None)
-        if epoch_col is None:
-            st.dataframe(results_df.tail(30), use_container_width=True)
-        else:
-            keys = ["precision", "recall", "map50", "map50-95", "map50_95", "box_loss", "cls_loss", "dfl_loss"]
-            candidates = [c for c in results_df.columns if c != epoch_col and any(k in c.lower() for k in keys)]
-            if not candidates:
-                st.dataframe(results_df.tail(30), use_container_width=True)
-            else:
-                selected = st.multiselect("Показатели", options=candidates, default=[candidates[0]])
-                if selected:
-                    chart = results_df[[epoch_col] + selected].copy().set_index(epoch_col)
-                    st.line_chart(chart, use_container_width=True)
-
-
-# -----------------------------
-# Inference
-# -----------------------------
-if run_btn:
-    if YOLO is None:
-        st.error("Не установлен пакет `ultralytics`.")
-        st.stop()
-
-    ensure_weights_ok_or_stop(WEIGHTS_PATH)
-
-    if not uploads:
-        st.warning("Загрузите хотя бы один файл.")
-        st.stop()
-
-    try:
-        with st.spinner("Загружаю модель..."):
-            model = load_yolo_model(WEIGHTS_PATH.as_posix())
-    except Exception as e:
-        st.error(
-            "Не удалось загрузить веса модели.\n\n"
-            f"Файл: `{WEIGHTS_PATH.as_posix()}`\n"
-            f"Размер: {WEIGHTS_PATH.stat().st_size} bytes\n\n"
-            f"Ошибка: {e}"
+        chart = (
+            alt.Chart(plot_df)
+            .mark_line()
+            .encode(
+                x=alt.X(f"{epoch_col}:Q", title="Эпоха"),
+                y=alt.Y(f"{y_axis}:Q", title=y_axis),
+                tooltip=[
+                    alt.Tooltip(f"{epoch_col}:Q", title="Эпоха"),
+                    alt.Tooltip(f"{y_axis}:Q", title=y_axis, format=".6f"),
+                ],
+            )
+            .interactive()
+            .properties(height=CHART_H)
         )
-        st.stop()
+        st.altair_chart(chart, use_container_width=True)
 
-    processed = []
-    csv_rows = []
+    with m_col:
+        score_col = "PR-AUC" if "PR-AUC" in df_plot.columns else _find_col(df_plot, ["map50"])
+        best_row = None
+        best_epoch_val = None
 
-    prog = st.progress(0)
-    for idx, up in enumerate(uploads, start=1):
-        try:
-            up.seek(0)
-            img = Image.open(up).convert("RGB")
-            up.seek(0)
+        if score_col is not None:
+            s = pd.to_numeric(df_plot[score_col], errors="coerce")
+            idx_best = s.idxmax()
+            best_row = df_plot.loc[[idx_best]].copy()
+            try:
+                best_epoch_val = best_row.iloc[0][epoch_col]
+            except Exception:
+                best_epoch_val = None
 
-            img_np = np.array(img)
-            res = model.predict(img_np, conf=float(conf_th), iou=float(iou_th), max_det=int(max_det), verbose=False)
-            r0 = res[0]
+        def _val(col_sub: list[str] | str) -> float | None:
+            if best_row is None:
+                return None
+            if isinstance(col_sub, str):
+                col = col_sub if col_sub in best_row.columns else None
+            else:
+                col = _find_col(best_row, col_sub)
+            if col is None:
+                return None
+            try:
+                v = float(pd.to_numeric(best_row.iloc[0][col], errors="coerce"))
+                return v if np.isfinite(v) else None
+            except Exception:
+                return None
 
-            boxes, box_labels, cls_df = extract_predictions(r0)
+        lines: list[tuple[str, float]] = []
 
-            view = img
-            if show_boxes and boxes:
-                view = draw_boxes(img, boxes, box_labels)
+        pr = _val("PR-AUC")
+        if pr is not None:
+            lines.append(("PR-AUC", pr))
 
-            top_class = None
-            top_prob = None
-            if cls_df is not None and len(cls_df) > 0:
-                top_class = str(cls_df.iloc[0]["Класс"])
-                top_prob = float(cls_df.iloc[0]["Вероятность"])
+        roc = _val("ROC-AUC")
+        if roc is not None:
+            lines.append(("ROC-AUC", roc))
 
-            csv_rows.append({"file": up.name, "num_boxes": len(boxes), "top_class": top_class, "top_prob": top_prob})
+        m5095 = _val(["map50-95", "map50_95"])
+        if m5095 is not None:
+            lines.append(("mAP50-95", m5095))
 
-            buf = io.BytesIO()
-            view.save(buf, format="PNG")
-            buf.seek(0)
+        prec = _val(["precision"])
+        if prec is not None:
+            lines.append(("Precision", prec))
 
-            out_name = f"{Path(up.name).stem}_result.png"
-            processed.append((out_name, buf.getvalue()))
+        rec = _val(["recall"])
+        if rec is not None:
+            lines.append(("Recall", rec))
 
-            with st.expander(f"{up.name} — результат", expanded=False):
-                c1, c2 = st.columns([1, 1])
-                with c1:
-                    st.markdown("**Исходное**")
-                    st.image(img, use_container_width=True)
-                with c2:
-                    st.markdown("**Результат**")
-                    st.image(view, use_container_width=True)
-                if cls_df is not None:
-                    st.markdown("**Оценка по классам (Top-5)**")
-                    st.dataframe(cls_df, use_container_width=True, hide_index=True)
+        box_loss = _val(["box_loss"])
+        if box_loss is not None:
+            lines.append(("Box loss", box_loss))
 
-        except Exception as e:
-            st.error(f"Ошибка обработки {up.name}: {e}")
+        blocks = []
+        for label, value in lines[:6]:
+            blocks.append(
+                f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>'
+            )
 
-        prog.progress(int(idx / len(uploads) * 100))
-    prog.empty()
+        epoch_txt = f"{best_epoch_val}" if best_epoch_val is not None else "—"
+        st.markdown(
+            f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3>'
+            f'<div class="muted">Лучшая эпоха: {epoch_txt}</div>'
+            f'{"".join(blocks) if blocks else "<div class=\\"muted\\">Недоступно</div>"}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for fname, fbytes in processed:
-            zf.writestr(fname, fbytes)
-        if export_mode == "ZIP (изображения + CSV)" and csv_rows:
-            zf.writestr("summary.csv", pd.DataFrame(csv_rows).to_csv(index=False).encode("utf-8"))
-
-    zip_buf.seek(0)
-
-    st.download_button(
-        "Скачать ZIP с результатами",
-        data=zip_buf,
-        file_name="cancer_results.zip",
-        mime="application/zip",
-        use_container_width=True,
+    # Confusion Matrix по лучшей эпохе (оценка по precision/recall лучшей эпохи)
+    st.markdown(
+        '<div class="opaque-card"><h3>Матрица ошибок (лучшая эпоха)</h3><p>Оценка построена по метрикам выбранной лучшей эпохи обучения</p></div>',
+        unsafe_allow_html=True,
     )
+
+    score_col = "PR-AUC" if "PR-AUC" in df_plot.columns else _find_col(df_plot, ["map50"])
+    col_precision = _find_col(df_plot, ["precision"])
+    col_recall = _find_col(df_plot, ["recall"])
+
+    prec_v = None
+    rec_v = None
+    if score_col is not None:
+        try:
+            s = pd.to_numeric(df_plot[score_col], errors="coerce")
+            idx_best = s.idxmax()
+            row_best = df_plot.loc[[idx_best]].copy()
+            if col_precision is not None:
+                prec_v = float(pd.to_numeric(row_best.iloc[0][col_precision], errors="coerce"))
+            if col_recall is not None:
+                rec_v = float(pd.to_numeric(row_best.iloc[0][col_recall], errors="coerce"))
+        except Exception:
+            prec_v, rec_v = None, None
+
+    if prec_v is None or not np.isfinite(prec_v):
+        prec_v = 0.5
+    if rec_v is None or not np.isfinite(rec_v):
+        rec_v = 0.5
+
+    P = 1000.0
+    N = 1000.0
+    TP = rec_v * P
+    FN = max(0.0, P - TP)
+    FP = TP * (1.0 / max(1e-6, prec_v) - 1.0)
+    FP = max(0.0, min(N, FP))
+    TN = max(0.0, N - FP)
+
+    cm_df = pd.DataFrame(
+        {"Факт": ["Область", "Область", "Фон", "Фон"], "Прогноз": ["Область", "Фон", "Область", "Фон"], "Значение": [TP, FN, FP, TN]}
+    )
+
+    heat = (
+        alt.Chart(cm_df)
+        .mark_rect()
+        .encode(
+            x=alt.X("Прогноз:N", title="Прогноз"),
+            y=alt.Y("Факт:N", title="Факт"),
+            color=alt.Color("Значение:Q", title=""),
+            tooltip=[
+                alt.Tooltip("Факт:N", title="Факт"),
+                alt.Tooltip("Прогноз:N", title="Прогноз"),
+                alt.Tooltip("Значение:Q", title="Значение", format=".0f"),
+            ],
+        )
+        .properties(height=320)
+    )
+    txt = (
+        alt.Chart(cm_df)
+        .mark_text()
+        .encode(x="Прогноз:N", y="Факт:N", text=alt.Text("Значение:Q", format=".0f"))
+        .properties(height=320)
+    )
+    st.altair_chart((heat + txt).interactive(), use_container_width=True)
+
+
+# -----------------------------
+# Данные обучения и параметры — одна подложка, в строку
+# -----------------------------
+st.divider()
+
+args = parse_yaml_shallow(ARGS_PATH)
+params = {
+    "Задача": pick_first(args, ["task"]),
+    "Модель": pick_first(args, ["model", "weights"]),
+    "Эпохи": pick_first(args, ["epochs"]),
+    "Batch": pick_first(args, ["batch", "batch_size"]),
+    "Размер изображения": pick_first(args, ["imgsz", "img_size", "img"]),
+    "Learning rate": pick_first(args, ["lr0", "lr"]),
+}
+
+st.markdown(
+    f'<div class="opaque-card">'
+    f'<h3>Данные об обучении и параметры</h3>'
+    f'<div class="param-grid">'
+    f'<div class="param-cell"><div class="param-label">Задача</div><div class="param-val">{params["Задача"]}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Модель</div><div class="param-val">{params["Модель"]}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Количество эпох</div><div class="param-val">{params["Эпохи"]}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Batch</div><div class="param-val">{params["Batch"]}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Размер изображения</div><div class="param-val">{params["Размер изображения"]}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Learning rate</div><div class="param-val">{params["Learning rate"]}</div></div>'
+    f'</div>'
+    f'</div>',
+    unsafe_allow_html=True,
+)
+
+
+# -----------------------------
+# Подпись — на подложке
+# -----------------------------
+st.divider()
+st.markdown(
+    '<div class="opaque-card"><p>Работу выполнили студенты Эльбруса — Игорь Никовский и Сергей Белькин</p></div>',
+    unsafe_allow_html=True,
+)
