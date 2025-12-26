@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
-import altair as alt
 from PIL import Image, ImageDraw, ImageFilter
 
 try:
@@ -42,7 +42,7 @@ st.set_page_config(page_title="FaceScanner — маскировка лиц", pag
 # Дизайн
 # -----------------------------
 UPLOAD_BOX_H = 120
-CHART_H = 440  # увеличили, чтобы влезали метрики без выхода за пределы
+CHART_H = 440  # увеличенная высота графиков и "лучших метрик"
 
 
 def apply_background_and_theme(bg_path: Path | None) -> None:
@@ -249,6 +249,14 @@ def is_git_lfs_pointer(file_path: Path) -> bool:
         return False
 
 
+def _find_col(df: pd.DataFrame, substrs: List[str]) -> str | None:
+    for c in df.columns:
+        cl = str(c).lower()
+        if any(s in cl for s in substrs):
+            return c
+    return None
+
+
 # -----------------------------
 # Загрузка по ссылкам
 # -----------------------------
@@ -289,6 +297,7 @@ def _payload_from_urls(urls: list[str]) -> list[tuple[str, bytes]]:
             name = Path(u.split("?")[0]).name or "image.jpg"
             out.append((name, b))
         except Exception:
+            # ссылку пропускаем молча (чтобы не засорять UI)
             continue
     return out
 
@@ -356,8 +365,7 @@ def draw_boxes(img: Image.Image, boxes: List[Tuple[int, int, int, int]]) -> Imag
 
 
 def predict_boxes(model, img_rgb: np.ndarray, conf: float, iou: float) -> List[Tuple[int, int, int, int]]:
-    # max_det убрали из UI — оставляем фиксированно
-    res = model.predict(img_rgb, conf=conf, iou=iou, max_det=50, verbose=False)
+    res = model.predict(img_rgb, conf=conf, iou=iou, max_det=50, verbose=False)  # max_det фиксировано
     if not res:
         return []
     r0 = res[0]
@@ -368,7 +376,7 @@ def predict_boxes(model, img_rgb: np.ndarray, conf: float, iou: float) -> List[T
 
 
 # -----------------------------
-# Sidebar: навигация + настройки
+# Sidebar: навигация + настройки (без "максимума детекций")
 # -----------------------------
 if st.sidebar.button("На главную", use_container_width=True):
     safe_switch_page("app.py")
@@ -402,10 +410,9 @@ mask_cfg = MaskConfig(mode=mask_mode, blur_radius=blur_radius, pixel_size=pixel_
 
 
 # -----------------------------
-# Данные обучения (args.yaml + results.csv)
+# Данные обучения
 # -----------------------------
 args = parse_yaml_shallow(ARGS_PATH)
-
 params = {
     "Задача": pick_first(args, ["task"]),
     "Модель": pick_first(args, ["model", "weights"]),
@@ -423,14 +430,6 @@ if RESULTS_PATH.exists():
         results_df = None
 
 
-def _find_col(df: pd.DataFrame, substrs: List[str]) -> str | None:
-    for c in df.columns:
-        cl = str(c).lower()
-        if any(s in cl for s in substrs):
-            return c
-    return None
-
-
 # -----------------------------
 # 1) Заголовок
 # -----------------------------
@@ -438,7 +437,7 @@ title_card("FaceScanner — маскировка лиц")
 
 
 # -----------------------------
-# 2) Загрузка (на всю ширину): файл + ссылки одинаковой высоты
+# 2) Загрузка (файлы + ссылки одинаковой высоты)
 # -----------------------------
 card("Загрузка изображений", "Загрузите изображения файлами и/или добавьте прямые ссылки")
 
@@ -456,7 +455,7 @@ with u2:
     card("Загрузка по ссылкам", "")
     urls_text = st.text_area(
         "Загрузка по ссылкам",
-        placeholder="https://...\nhttps://...\n(по одной ссылке на строку)",
+        placeholder="https://...",
         label_visibility="collapsed",
         height=UPLOAD_BOX_H,
     )
@@ -560,86 +559,76 @@ if run_btn:
 
 
 # -----------------------------
-# 6) Качество модели (валидация): PR-AUC / ROC-AUC / Confusion Matrix
+# 6) Качество модели: один график с подписями осей + PR-AUC/ROC-AUC + Confusion Matrix по лучшей эпохе
 # -----------------------------
 st.divider()
 
-epoch_col = None
-numeric_cols: list[str] = []
 df_plot: pd.DataFrame | None = None
+epoch_col = None
 
 if results_df is not None:
-    epoch_col = _find_col(results_df, ["epoch"])
     df_plot = results_df.copy()
+    epoch_col = _find_col(df_plot, ["epoch"])
 
-    # базовые колонки (обычно есть в Ultralytics results.csv)
     col_precision = _find_col(df_plot, ["precision"])
     col_recall = _find_col(df_plot, ["recall"])
-    col_map50 = _find_col(df_plot, ["map50"])  # AP@0.5 ~ PR-AUC
+    col_map50 = _find_col(df_plot, ["map50"])
     col_map5095 = _find_col(df_plot, ["map50-95", "map50_95"])
 
-    # PR-AUC (для детекции в YOLO это AP; берём mAP50 как PR-AUC)
+    # PR-AUC для детекции (AP@0.5) — берём mAP50
     if col_map50 is not None and "PR-AUC" not in df_plot.columns:
         df_plot["PR-AUC"] = pd.to_numeric(df_plot[col_map50], errors="coerce")
 
-    # ROC-AUC (приближение по агрегированным метрикам)
+    # ROC-AUC (число): приближение по агрегированным метрикам
     if col_precision is not None and col_recall is not None and "ROC-AUC" not in df_plot.columns:
         p = pd.to_numeric(df_plot[col_precision], errors="coerce")
         r = pd.to_numeric(df_plot[col_recall], errors="coerce")
         df_plot["ROC-AUC"] = (p + r) / 2.0
 
-    if epoch_col is not None:
-        numeric_cols = [
-            c for c in df_plot.columns
-            if c != epoch_col and pd.api.types.is_numeric_dtype(df_plot[c])
-        ]
+card("Показатели качества, рассчитанные на валидационной выборке", "Выберите показатели для отображения")
 
-card("Показатели качества, рассчитанные на валидационной выборке", "Выберите показатели, которые нужно отобразить")
-
-selected = []
-default_sel = []
-if df_plot is not None and epoch_col is not None and numeric_cols:
-    # дефолт: PR-AUC, ROC-AUC, mAP50-95 (если есть)
-    for want in ["PR-AUC", "ROC-AUC"]:
-        if want in numeric_cols:
-            default_sel.append(want)
-    if df_plot is not None:
-        if _find_col(df_plot, ["map50-95", "map50_95"]) in numeric_cols:
-            default_sel.append(_find_col(df_plot, ["map50-95", "map50_95"]))
-    if not default_sel:
-        default_sel = numeric_cols[:3]
-
-    selected = st.multiselect(
-        "Показатели",
-        options=numeric_cols,
-        default=default_sel,
-        label_visibility="collapsed",
-    )
-
-card("Интерактивная визуализация динамики метрик", "")
-
-if df_plot is None or epoch_col is None or not selected:
+if df_plot is None or epoch_col is None:
     if results_df is not None:
         st.dataframe(results_df.tail(20), use_container_width=True)
 else:
-    # Графики + лучшие метрики
+    # кандидаты на Y (один показатель)
+    y_candidates = [
+        c for c in df_plot.columns
+        if c != epoch_col and pd.api.types.is_numeric_dtype(df_plot[c])
+    ]
+
+    # дефолтно показываем PR-AUC (если есть), иначе mAP50-95, иначе первый числовой
+    default_y = None
+    if "PR-AUC" in y_candidates:
+        default_y = "PR-AUC"
+    else:
+        c5095 = _find_col(df_plot, ["map50-95", "map50_95"])
+        if c5095 in y_candidates:
+            default_y = c5095
+        elif y_candidates:
+            default_y = y_candidates[0]
+
+    y_axis = st.selectbox("Показатель", options=y_candidates, index=y_candidates.index(default_y) if default_y in y_candidates else 0)
+
+    card("Интерактивная визуализация динамики метрик", "")
+
     g_col, m_col = st.columns([1.35, 0.65], gap="large")
 
     with g_col:
-        long = df_plot[[epoch_col] + selected].melt(
-            id_vars=[epoch_col], var_name="Показатель", value_name="Значение"
-        )
+        plot_df = df_plot[[epoch_col, y_axis]].copy()
+        plot_df[epoch_col] = pd.to_numeric(plot_df[epoch_col], errors="coerce")
+        plot_df[y_axis] = pd.to_numeric(plot_df[y_axis], errors="coerce")
+        plot_df = plot_df.dropna()
+
         chart = (
-            alt.Chart(long)
+            alt.Chart(plot_df)
             .mark_line()
             .encode(
                 x=alt.X(f"{epoch_col}:Q", title="Эпоха"),
-                y=alt.Y("Значение:Q", title="Значение"),
-                color=alt.Color("Показатель:N", title=""),
+                y=alt.Y(f"{y_axis}:Q", title=y_axis),
                 tooltip=[
                     alt.Tooltip(f"{epoch_col}:Q", title="Эпоха"),
-                    alt.Tooltip("Показатель:N", title="Показатель"),
-                    alt.Tooltip("Значение:Q", title="Значение", format=".6f"),
+                    alt.Tooltip(f"{y_axis}:Q", title=y_axis, format=".6f"),
                 ],
             )
             .interactive()
@@ -648,98 +637,107 @@ else:
         st.altair_chart(chart, use_container_width=True)
 
     with m_col:
-        # Лучшие метрики: PR-AUC/ROC-AUC/MAX, лоссы/MIN если есть
-        best_lines: List[Tuple[str, float]] = []
+        # Лучшие метрики: берём значения на ЛУЧШЕЙ эпохе (по PR-AUC, иначе по map50)
+        score_col = "PR-AUC" if "PR-AUC" in df_plot.columns else _find_col(df_plot, ["map50"])
+        best_row = None
+        best_epoch_val = None
 
-        def _best_max(col_name: str, label: str):
-            if col_name in df_plot.columns and pd.api.types.is_numeric_dtype(df_plot[col_name]):
-                best_lines.append((label, float(pd.to_numeric(df_plot[col_name], errors="coerce").max())))
+        if score_col is not None:
+            s = pd.to_numeric(df_plot[score_col], errors="coerce")
+            idx_best = s.idxmax()
+            best_row = df_plot.loc[[idx_best]].copy()
+            try:
+                best_epoch_val = best_row.iloc[0][epoch_col]
+            except Exception:
+                best_epoch_val = None
 
-        def _best_min_by_sub(sub: list[str], label: str):
-            col = _find_col(df_plot, sub)
-            if col is not None and pd.api.types.is_numeric_dtype(df_plot[col]):
-                best_lines.append((label, float(pd.to_numeric(df_plot[col], errors="coerce").min())))
+        def _val(col_sub: list[str] | str) -> float | None:
+            if best_row is None:
+                return None
+            if isinstance(col_sub, str):
+                col = col_sub if col_sub in best_row.columns else None
+            else:
+                col = _find_col(best_row, col_sub)
+            if col is None:
+                return None
+            try:
+                v = float(pd.to_numeric(best_row.iloc[0][col], errors="coerce"))
+                return v if np.isfinite(v) else None
+            except Exception:
+                return None
 
-        if "PR-AUC" in df_plot.columns:
-            _best_max("PR-AUC", "PR-AUC")
-        if "ROC-AUC" in df_plot.columns:
-            _best_max("ROC-AUC", "ROC-AUC")
+        lines: list[tuple[str, float]] = []
 
-        col_map5095 = _find_col(df_plot, ["map50-95", "map50_95"])
-        if col_map5095 is not None:
-            _best_max(col_map5095, "mAP50-95")
+        pr = _val("PR-AUC")
+        if pr is not None:
+            lines.append(("PR-AUC", pr))
 
-        col_precision = _find_col(df_plot, ["precision"])
-        if col_precision is not None:
-            _best_max(col_precision, "Precision")
+        roc = _val("ROC-AUC")
+        if roc is not None:
+            lines.append(("ROC-AUC", roc))
 
-        col_recall = _find_col(df_plot, ["recall"])
-        if col_recall is not None:
-            _best_max(col_recall, "Recall")
+        m5095 = _val(["map50-95", "map50_95"])
+        if m5095 is not None:
+            lines.append(("mAP50-95", m5095))
 
-        _best_min_by_sub(["box_loss"], "Box loss")
-        _best_min_by_sub(["cls_loss"], "Cls loss")
-        _best_min_by_sub(["dfl_loss"], "DFL loss")
+        prec = _val(["precision"])
+        if prec is not None:
+            lines.append(("Precision", prec))
 
-        if best_lines:
-            blocks = []
-            for label, value in best_lines[:6]:
-                blocks.append(
-                    f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>'
-                )
-            st.markdown(
-                f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3>{"".join(blocks)}</div>',
-                unsafe_allow_html=True,
+        rec = _val(["recall"])
+        if rec is not None:
+            lines.append(("Recall", rec))
+
+        box_loss = _val(["box_loss"])
+        if box_loss is not None:
+            lines.append(("Box loss", box_loss))
+
+        blocks = []
+        for label, value in lines[:6]:
+            blocks.append(
+                f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>'
             )
-        else:
-            st.markdown(
-                '<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3><div class="muted">Недоступно</div></div>',
-                unsafe_allow_html=True,
-            )
 
-    # Confusion Matrix (оценка по агрегированным метрикам на лучшей эпохе)
-    st.markdown('<div class="opaque-card"><h3>Матрица ошибок (оценка)</h3><p>Сводная оценка по метрикам валидации</p></div>', unsafe_allow_html=True)
+        epoch_txt = f"{best_epoch_val}" if best_epoch_val is not None else "—"
+        st.markdown(
+            f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3>'
+            f'<div class="muted">Лучшая эпоха: {epoch_txt}</div>'
+            f'{"".join(blocks) if blocks else "<div class=\\"muted\\">Недоступно</div>"}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
-    # определяем "лучшую эпоху" по PR-AUC, иначе по mAP50
-    best_epoch = None
-    pr_col = "PR-AUC" if df_plot is not None and "PR-AUC" in df_plot.columns else _find_col(df_plot, ["map50"])
-    if pr_col is not None:
-        try:
-            idx_best = int(pd.to_numeric(df_plot[pr_col], errors="coerce").idxmax())
-            best_epoch = df_plot.loc[idx_best, epoch_col]
-        except Exception:
-            best_epoch = None
+    # Confusion Matrix по лучшей эпохе (оценка по precision/recall этой эпохи)
+    st.markdown(
+        '<div class="opaque-card"><h3>Матрица ошибок (лучшая эпоха)</h3><p>Оценка построена по метрикам выбранной лучшей эпохи обучения</p></div>',
+        unsafe_allow_html=True,
+    )
 
-    # берём precision/recall на лучшей эпохе; если нет — берём максимальные
+    # берём precision/recall строго из лучшей эпохи (best_row уже найден выше)
     col_precision = _find_col(df_plot, ["precision"])
     col_recall = _find_col(df_plot, ["recall"])
 
     prec_v = None
     rec_v = None
-    try:
-        if best_epoch is not None:
-            row = df_plot[df_plot[epoch_col] == best_epoch].tail(1)
-            if len(row) == 0:
-                row = df_plot.tail(1)
-        else:
-            row = df_plot.tail(1)
+    if score_col is not None:
+        try:
+            s = pd.to_numeric(df_plot[score_col], errors="coerce")
+            idx_best = s.idxmax()
+            row_best = df_plot.loc[[idx_best]].copy()
+            if col_precision is not None:
+                prec_v = float(pd.to_numeric(row_best.iloc[0][col_precision], errors="coerce"))
+            if col_recall is not None:
+                rec_v = float(pd.to_numeric(row_best.iloc[0][col_recall], errors="coerce"))
+        except Exception:
+            prec_v, rec_v = None, None
 
-        if col_precision is not None:
-            prec_v = float(pd.to_numeric(row[col_precision], errors="coerce").iloc[0])
-        if col_recall is not None:
-            rec_v = float(pd.to_numeric(row[col_recall], errors="coerce").iloc[0])
-    except Exception:
-        prec_v, rec_v = None, None
-
-    # если не удалось — ставим безопасные значения, чтобы график был
     if prec_v is None or not np.isfinite(prec_v):
         prec_v = 0.5
     if rec_v is None or not np.isfinite(rec_v):
         rec_v = 0.5
 
-    # масштабирование (условное), чтобы матрица была читаемой
-    P = 1000.0  # "положительные" (лица)
-    N = 1000.0  # "фон"
+    P = 1000.0
+    N = 1000.0
     TP = rec_v * P
     FN = max(0.0, P - TP)
     FP = TP * (1.0 / max(1e-6, prec_v) - 1.0)
@@ -760,15 +758,16 @@ else:
         .encode(
             x=alt.X("Прогноз:N", title="Прогноз"),
             y=alt.Y("Факт:N", title="Факт"),
-            tooltip=[
-                alt.Tooltip("Факт:N"),
-                alt.Tooltip("Прогноз:N"),
-                alt.Tooltip("Значение:Q", format=".0f"),
-            ],
             color=alt.Color("Значение:Q", title=""),
+            tooltip=[
+                alt.Tooltip("Факт:N", title="Факт"),
+                alt.Tooltip("Прогноз:N", title="Прогноз"),
+                alt.Tooltip("Значение:Q", title="Значение", format=".0f"),
+            ],
         )
-        .properties(height=280)
+        .properties(height=320)
     )
+
     txt = (
         alt.Chart(cm_df)
         .mark_text()
@@ -777,7 +776,7 @@ else:
             y="Факт:N",
             text=alt.Text("Значение:Q", format=".0f"),
         )
-        .properties(height=280)
+        .properties(height=320)
     )
 
     st.altair_chart((heat + txt).interactive(), use_container_width=True)
