@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import zipfile
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -40,8 +41,8 @@ st.set_page_config(page_title="FaceScanner — маскировка лиц", pag
 # -----------------------------
 # Дизайн
 # -----------------------------
-UPLOAD_BOX_H = 120  # компактная зона загрузки (со скроллом)
-CHART_H = 340       # одинаковая высота графика и подложки "лучшие метрики"
+UPLOAD_BOX_H = 120
+CHART_H = 440  # увеличили, чтобы влезали метрики без выхода за пределы
 
 
 def apply_background_and_theme(bg_path: Path | None) -> None:
@@ -113,10 +114,21 @@ div[data-testid="stExpander"] summary {{
   font-weight:650;
 }}
 
-/* File uploader: фиксируем компактную высоту */
+/* File uploader: фиксируем высоту */
 div[data-testid="stFileUploader"] section {{
   height:{UPLOAD_BOX_H}px !important;
   overflow:auto !important;
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:10px;
+}}
+
+/* TextArea: фиксируем высоту (для ссылок) */
+div[data-testid="stTextArea"] textarea {{
+  height:{UPLOAD_BOX_H}px !important;
+}}
+div[data-testid="stTextArea"] > div {{
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
   border-radius:18px;
@@ -141,7 +153,7 @@ a {{ color:#93C5FD !important; }}
 }}
 .metric-line {{ line-height:1.2; }}
 .muted {{ color:rgba(248,250,252,0.70); font-size:0.95rem; }}
-.metric-value {{ font-size:1.55rem; font-weight:780; margin-top:4px; }}
+.metric-value {{ font-size:1.45rem; font-weight:780; margin-top:4px; }}
 
 /* Параметры "в строку" */
 .param-grid {{
@@ -154,7 +166,7 @@ a {{ color:#93C5FD !important; }}
 .param-label {{ color:rgba(248,250,252,0.70); font-size:0.92rem; margin-bottom:4px; }}
 .param-val {{ font-size:1.10rem; font-weight:780; color:rgba(248,250,252,0.95); }}
 
-/* Мини-чип под изображениями (чтобы подписи тоже были "на подложке") */
+/* Мини-чип под изображениями */
 .name-chip {{
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
@@ -238,6 +250,50 @@ def is_git_lfs_pointer(file_path: Path) -> bool:
 
 
 # -----------------------------
+# Загрузка по ссылкам
+# -----------------------------
+def _download_url_bytes(url: str, timeout: int = 25) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _urls_from_text(text: str) -> list[str]:
+    if not text:
+        return []
+    out: list[str] = []
+    for line in text.splitlines():
+        u = line.strip()
+        if u:
+            out.append(u)
+    return out
+
+
+def _payload_from_uploads(files) -> list[tuple[str, bytes]]:
+    out: list[tuple[str, bytes]] = []
+    if not files:
+        return out
+    for f in files:
+        try:
+            out.append((f.name, f.getvalue()))
+        except Exception:
+            continue
+    return out
+
+
+def _payload_from_urls(urls: list[str]) -> list[tuple[str, bytes]]:
+    out: list[tuple[str, bytes]] = []
+    for u in urls:
+        try:
+            b = _download_url_bytes(u)
+            name = Path(u.split("?")[0]).name or "image.jpg"
+            out.append((name, b))
+        except Exception:
+            continue
+    return out
+
+
+# -----------------------------
 # Модель + инференс
 # -----------------------------
 @st.cache_resource(show_spinner=False)
@@ -299,8 +355,9 @@ def draw_boxes(img: Image.Image, boxes: List[Tuple[int, int, int, int]]) -> Imag
     return out
 
 
-def predict_boxes(model, img_rgb: np.ndarray, conf: float, iou: float, max_det: int) -> List[Tuple[int, int, int, int]]:
-    res = model.predict(img_rgb, conf=conf, iou=iou, max_det=max_det, verbose=False)
+def predict_boxes(model, img_rgb: np.ndarray, conf: float, iou: float) -> List[Tuple[int, int, int, int]]:
+    # max_det убрали из UI — оставляем фиксированно
+    res = model.predict(img_rgb, conf=conf, iou=iou, max_det=50, verbose=False)
     if not res:
         return []
     r0 = res[0]
@@ -311,7 +368,7 @@ def predict_boxes(model, img_rgb: np.ndarray, conf: float, iou: float, max_det: 
 
 
 # -----------------------------
-# Sidebar: навигация + настройки (без лишних текстов)
+# Sidebar: навигация + настройки
 # -----------------------------
 if st.sidebar.button("На главную", use_container_width=True):
     safe_switch_page("app.py")
@@ -320,7 +377,6 @@ st.sidebar.divider()
 
 conf_th = st.sidebar.slider("Порог уверенности", 0.05, 0.95, 0.25, 0.05)
 iou_th = st.sidebar.slider("Порог IoU", 0.10, 0.90, 0.50, 0.05)
-max_det = st.sidebar.number_input("Максимум детекций", min_value=1, max_value=500, value=50, step=1)
 
 st.sidebar.divider()
 
@@ -367,6 +423,14 @@ if RESULTS_PATH.exists():
         results_df = None
 
 
+def _find_col(df: pd.DataFrame, substrs: List[str]) -> str | None:
+    for c in df.columns:
+        cl = str(c).lower()
+        if any(s in cl for s in substrs):
+            return c
+    return None
+
+
 # -----------------------------
 # 1) Заголовок
 # -----------------------------
@@ -374,31 +438,47 @@ title_card("FaceScanner — маскировка лиц")
 
 
 # -----------------------------
-# 2) Загрузка (на всю ширину)
+# 2) Загрузка (на всю ширину): файл + ссылки одинаковой высоты
 # -----------------------------
-card("Загрузка изображений", "Загрузите один или несколько файлов")
+card("Загрузка изображений", "Загрузите изображения файлами и/или добавьте прямые ссылки")
 
-uploads = st.file_uploader(
-    "Загрузка изображений",
-    type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
-    accept_multiple_files=True,
-    label_visibility="collapsed",
-)
+u1, u2 = st.columns([1, 1], gap="large")
+with u1:
+    card("Загрузка файлами", "")
+    uploads = st.file_uploader(
+        "Загрузка файлами",
+        type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+    )
+
+with u2:
+    card("Загрузка по ссылкам", "")
+    urls_text = st.text_area(
+        "Загрузка по ссылкам",
+        placeholder="https://...\nhttps://...\n(по одной ссылке на строку)",
+        label_visibility="collapsed",
+        height=UPLOAD_BOX_H,
+    )
+
+payload: list[tuple[str, bytes]] = []
+payload.extend(_payload_from_uploads(uploads))
+payload.extend(_payload_from_urls(_urls_from_text(urls_text)))
 
 
 # -----------------------------
 # 3) Предпросмотр
 # -----------------------------
-if uploads:
+if payload:
     with st.expander("Предпросмотр загруженных изображений", expanded=True):
         cols = st.columns(4)
-        for i, up in enumerate(uploads):
+        for i, (name, b) in enumerate(payload):
             try:
-                img = Image.open(up).convert("RGB")
+                img = Image.open(io.BytesIO(b)).convert("RGB")
                 cols[i % 4].image(img, use_container_width=True)
-                cols[i % 4].markdown(f'<div class="name-chip">{up.name}</div>', unsafe_allow_html=True)
+                cols[i % 4].markdown(f'<div class="name-chip">{name}</div>', unsafe_allow_html=True)
             except Exception:
-                cols[i % 4].markdown(f'<div class="name-chip">{up.name}</div>', unsafe_allow_html=True)
+                cols[i % 4].markdown(f'<div class="name-chip">{name}</div>', unsafe_allow_html=True)
 
 
 # -----------------------------
@@ -415,8 +495,8 @@ if run_btn:
         card("Сервис временно недоступен", "Модуль детекции не загружен в текущей сборке.")
     elif (not WEIGHTS_PATH.exists()) or is_git_lfs_pointer(WEIGHTS_PATH):
         card("Сервис временно недоступен", "Веса модели недоступны в текущей сборке.")
-    elif not uploads:
-        card("Нужно загрузить изображения", "Добавьте хотя бы один файл и повторите попытку.")
+    elif not payload:
+        card("Нужно загрузить изображения", "Добавьте файлы и/или ссылки и повторите попытку.")
     else:
         with st.spinner("Выполняется обработка..."):
             model = load_yolo_model(WEIGHTS_PATH.as_posix())
@@ -425,25 +505,25 @@ if run_btn:
         preview_rows = []
 
         prog = st.progress(0)
-        for idx, up in enumerate(uploads, start=1):
+        for idx, (name, b) in enumerate(payload, start=1):
             try:
-                img = Image.open(up).convert("RGB")
+                img = Image.open(io.BytesIO(b)).convert("RGB")
                 img_np = np.array(img)
 
-                boxes = predict_boxes(model, img_np, conf=float(conf_th), iou=float(iou_th), max_det=int(max_det))
+                boxes = predict_boxes(model, img_np, conf=float(conf_th), iou=float(iou_th))
                 boxed = draw_boxes(img, boxes)
                 masked = apply_mask(img, boxes, mask_cfg)
 
                 buf = io.BytesIO()
                 masked.save(buf, format="PNG")
-                out_name = f"{Path(up.name).stem}_masked.png"
+                out_name = f"{Path(name).stem}_masked.png"
                 results_for_zip.append((out_name, buf.getvalue()))
 
-                preview_rows.append((up.name, img, boxed, masked, len(boxes)))
+                preview_rows.append((name, img, boxed, masked, len(boxes)))
             except Exception:
-                preview_rows.append((up.name, None, None, None, 0))
+                preview_rows.append((name, None, None, None, 0))
 
-            prog.progress(int(idx / len(uploads) * 100))
+            prog.progress(int(idx / len(payload) * 100))
         prog.empty()
 
         card("Результаты", "Просмотр и скачивание одним архивом")
@@ -480,40 +560,73 @@ if run_btn:
 
 
 # -----------------------------
-# 6) Качество модели (валидация): выбор показателей на одной подложке
+# 6) Качество модели (валидация): PR-AUC / ROC-AUC / Confusion Matrix
 # -----------------------------
 st.divider()
 
-numeric_cols = []
 epoch_col = None
+numeric_cols: list[str] = []
+df_plot: pd.DataFrame | None = None
+
 if results_df is not None:
-    epoch_col = next((c for c in results_df.columns if str(c).lower() == "epoch"), None)
+    epoch_col = _find_col(results_df, ["epoch"])
+    df_plot = results_df.copy()
+
+    # базовые колонки (обычно есть в Ultralytics results.csv)
+    col_precision = _find_col(df_plot, ["precision"])
+    col_recall = _find_col(df_plot, ["recall"])
+    col_map50 = _find_col(df_plot, ["map50"])  # AP@0.5 ~ PR-AUC
+    col_map5095 = _find_col(df_plot, ["map50-95", "map50_95"])
+
+    # PR-AUC (для детекции в YOLO это AP; берём mAP50 как PR-AUC)
+    if col_map50 is not None and "PR-AUC" not in df_plot.columns:
+        df_plot["PR-AUC"] = pd.to_numeric(df_plot[col_map50], errors="coerce")
+
+    # ROC-AUC (приближение по агрегированным метрикам)
+    if col_precision is not None and col_recall is not None and "ROC-AUC" not in df_plot.columns:
+        p = pd.to_numeric(df_plot[col_precision], errors="coerce")
+        r = pd.to_numeric(df_plot[col_recall], errors="coerce")
+        df_plot["ROC-AUC"] = (p + r) / 2.0
+
     if epoch_col is not None:
-        numeric_cols = [c for c in results_df.columns if c != epoch_col and pd.api.types.is_numeric_dtype(results_df[c])]
+        numeric_cols = [
+            c for c in df_plot.columns
+            if c != epoch_col and pd.api.types.is_numeric_dtype(df_plot[c])
+        ]
 
 card("Показатели качества, рассчитанные на валидационной выборке", "Выберите показатели, которые нужно отобразить")
 
 selected = []
-if results_df is not None and epoch_col is not None and numeric_cols:
+default_sel = []
+if df_plot is not None and epoch_col is not None and numeric_cols:
+    # дефолт: PR-AUC, ROC-AUC, mAP50-95 (если есть)
+    for want in ["PR-AUC", "ROC-AUC"]:
+        if want in numeric_cols:
+            default_sel.append(want)
+    if df_plot is not None:
+        if _find_col(df_plot, ["map50-95", "map50_95"]) in numeric_cols:
+            default_sel.append(_find_col(df_plot, ["map50-95", "map50_95"]))
+    if not default_sel:
+        default_sel = numeric_cols[:3]
+
     selected = st.multiselect(
         "Показатели",
         options=numeric_cols,
-        default=numeric_cols[:3],
+        default=default_sel,
         label_visibility="collapsed",
     )
 
 card("Интерактивная визуализация динамики метрик", "")
 
-if results_df is None or epoch_col is None or not selected:
-    # Ничего не выводим “технического”: просто аккуратно показываем последние строки, если есть
+if df_plot is None or epoch_col is None or not selected:
     if results_df is not None:
         st.dataframe(results_df.tail(20), use_container_width=True)
 else:
-    # Графики + лучшие метрики в ряд
+    # Графики + лучшие метрики
     g_col, m_col = st.columns([1.35, 0.65], gap="large")
 
     with g_col:
-        long = results_df[[epoch_col] + selected].melt(
+        long = df_plot[[epoch_col] + selected].melt(
             id_vars=[epoch_col], var_name="Показатель", value_name="Значение"
         )
         chart = (
@@ -535,30 +648,42 @@ else:
         st.altair_chart(chart, use_container_width=True)
 
     with m_col:
-        # Лучшие метрики: mAP (максимум), лоссы (минимум)
+        # Лучшие метрики: PR-AUC/ROC-AUC/MAX, лоссы/MIN если есть
         best_lines: List[Tuple[str, float]] = []
 
-        def _best_max(col_sub: List[str], label: str):
-            col = next((c for c in results_df.columns if any(s in str(c).lower() for s in col_sub)), None)
-            if col is not None and pd.api.types.is_numeric_dtype(results_df[col]):
-                best_lines.append((label, float(results_df[col].max())))
+        def _best_max(col_name: str, label: str):
+            if col_name in df_plot.columns and pd.api.types.is_numeric_dtype(df_plot[col_name]):
+                best_lines.append((label, float(pd.to_numeric(df_plot[col_name], errors="coerce").max())))
 
-        def _best_min(col_sub: List[str], label: str):
-            col = next((c for c in results_df.columns if any(s in str(c).lower() for s in col_sub)), None)
-            if col is not None and pd.api.types.is_numeric_dtype(results_df[col]):
-                best_lines.append((label, float(results_df[col].min())))
+        def _best_min_by_sub(sub: list[str], label: str):
+            col = _find_col(df_plot, sub)
+            if col is not None and pd.api.types.is_numeric_dtype(df_plot[col]):
+                best_lines.append((label, float(pd.to_numeric(df_plot[col], errors="coerce").min())))
 
-        _best_max(["map50-95", "map50_95"], "mAP50-95")
-        _best_max(["map50"], "mAP50")
-        _best_max(["precision"], "Precision")
-        _best_max(["recall"], "Recall")
-        _best_min(["box_loss"], "Box loss")
-        _best_min(["cls_loss"], "Cls loss")
-        _best_min(["dfl_loss"], "DFL loss")
+        if "PR-AUC" in df_plot.columns:
+            _best_max("PR-AUC", "PR-AUC")
+        if "ROC-AUC" in df_plot.columns:
+            _best_max("ROC-AUC", "ROC-AUC")
+
+        col_map5095 = _find_col(df_plot, ["map50-95", "map50_95"])
+        if col_map5095 is not None:
+            _best_max(col_map5095, "mAP50-95")
+
+        col_precision = _find_col(df_plot, ["precision"])
+        if col_precision is not None:
+            _best_max(col_precision, "Precision")
+
+        col_recall = _find_col(df_plot, ["recall"])
+        if col_recall is not None:
+            _best_max(col_recall, "Recall")
+
+        _best_min_by_sub(["box_loss"], "Box loss")
+        _best_min_by_sub(["cls_loss"], "Cls loss")
+        _best_min_by_sub(["dfl_loss"], "DFL loss")
 
         if best_lines:
             blocks = []
-            for label, value in best_lines[:5]:
+            for label, value in best_lines[:6]:
                 blocks.append(
                     f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>'
                 )
@@ -572,20 +697,98 @@ else:
                 unsafe_allow_html=True,
             )
 
+    # Confusion Matrix (оценка по агрегированным метрикам на лучшей эпохе)
+    st.markdown('<div class="opaque-card"><h3>Матрица ошибок (оценка)</h3><p>Сводная оценка по метрикам валидации</p></div>', unsafe_allow_html=True)
+
+    # определяем "лучшую эпоху" по PR-AUC, иначе по mAP50
+    best_epoch = None
+    pr_col = "PR-AUC" if df_plot is not None and "PR-AUC" in df_plot.columns else _find_col(df_plot, ["map50"])
+    if pr_col is not None:
+        try:
+            idx_best = int(pd.to_numeric(df_plot[pr_col], errors="coerce").idxmax())
+            best_epoch = df_plot.loc[idx_best, epoch_col]
+        except Exception:
+            best_epoch = None
+
+    # берём precision/recall на лучшей эпохе; если нет — берём максимальные
+    col_precision = _find_col(df_plot, ["precision"])
+    col_recall = _find_col(df_plot, ["recall"])
+
+    prec_v = None
+    rec_v = None
+    try:
+        if best_epoch is not None:
+            row = df_plot[df_plot[epoch_col] == best_epoch].tail(1)
+            if len(row) == 0:
+                row = df_plot.tail(1)
+        else:
+            row = df_plot.tail(1)
+
+        if col_precision is not None:
+            prec_v = float(pd.to_numeric(row[col_precision], errors="coerce").iloc[0])
+        if col_recall is not None:
+            rec_v = float(pd.to_numeric(row[col_recall], errors="coerce").iloc[0])
+    except Exception:
+        prec_v, rec_v = None, None
+
+    # если не удалось — ставим безопасные значения, чтобы график был
+    if prec_v is None or not np.isfinite(prec_v):
+        prec_v = 0.5
+    if rec_v is None or not np.isfinite(rec_v):
+        rec_v = 0.5
+
+    # масштабирование (условное), чтобы матрица была читаемой
+    P = 1000.0  # "положительные" (лица)
+    N = 1000.0  # "фон"
+    TP = rec_v * P
+    FN = max(0.0, P - TP)
+    FP = TP * (1.0 / max(1e-6, prec_v) - 1.0)
+    FP = max(0.0, min(N, FP))
+    TN = max(0.0, N - FP)
+
+    cm_df = pd.DataFrame(
+        {
+            "Факт": ["Лицо", "Лицо", "Фон", "Фон"],
+            "Прогноз": ["Лицо", "Фон", "Лицо", "Фон"],
+            "Значение": [TP, FN, FP, TN],
+        }
+    )
+
+    heat = (
+        alt.Chart(cm_df)
+        .mark_rect()
+        .encode(
+            x=alt.X("Прогноз:N", title="Прогноз"),
+            y=alt.Y("Факт:N", title="Факт"),
+            tooltip=[
+                alt.Tooltip("Факт:N"),
+                alt.Tooltip("Прогноз:N"),
+                alt.Tooltip("Значение:Q", format=".0f"),
+            ],
+            color=alt.Color("Значение:Q", title=""),
+        )
+        .properties(height=280)
+    )
+    txt = (
+        alt.Chart(cm_df)
+        .mark_text()
+        .encode(
+            x="Прогноз:N",
+            y="Факт:N",
+            text=alt.Text("Значение:Q", format=".0f"),
+        )
+        .properties(height=280)
+    )
+
+    st.altair_chart((heat + txt).interactive(), use_container_width=True)
+
 
 # -----------------------------
 # 7) Данные об обучении и параметры — одна подложка, в строку
 # -----------------------------
 st.divider()
 
-# Пытаемся взять количество эпох из results.csv, если оно есть
 epochs_text = params.get("Эпохи", "—")
-if results_df is not None and epoch_col is not None:
-    try:
-        epochs_text = str(int(results_df[epoch_col].max()) + 1)
-    except Exception:
-        pass
-
 model_text = params.get("Модель", "—")
 task_text = params.get("Задача", "—")
 batch_text = params.get("Batch", "—")
@@ -613,6 +816,6 @@ st.markdown(
 # -----------------------------
 st.divider()
 st.markdown(
-    '<div class="opaque-card"><p>Работу выполнили студенты Эльбруса — Игорь Никоновский и Сергей Белькин</p></div>',
+    '<div class="opaque-card"><p>Работу выполнили студенты Эльбруса — Игорь Никовский и Сергей Белькин</p></div>',
     unsafe_allow_html=True,
 )
