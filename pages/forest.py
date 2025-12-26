@@ -32,9 +32,13 @@ st.set_page_config(page_title="Сегментация аэрокосмическ
 
 
 # -----------------------------
-# Оформление
+# CSS / UI helpers
 # -----------------------------
-def apply_background(bg_path: Path) -> None:
+UPLOAD_BOX_H = 260       # одинаковая высота для "файлы" и "ссылки"
+CHART_H = 340            # высота графиков и карточки "лучшие метрики"
+
+
+def apply_background_and_theme(bg_path: Path) -> None:
     bg_css = ""
     if bg_path.exists():
         b64 = base64.b64encode(bg_path.read_bytes()).decode("utf-8")
@@ -55,7 +59,6 @@ def apply_background(bg_path: Path) -> None:
         .stApp, .stMarkdown, .stText, .stCaption, .stWrite {{
             color: #F8FAFC;
         }}
-
         header[data-testid="stHeader"] {{ background: rgba(0,0,0,0); }}
 
         section[data-testid="stSidebar"] {{
@@ -64,6 +67,7 @@ def apply_background(bg_path: Path) -> None:
         }}
         section[data-testid="stSidebar"] * {{ color: #F8FAFC !important; }}
 
+        /* Карточки — ВСЕ тексты по центру */
         .opaque-card {{
             background: #0B1220;
             border: 1px solid rgba(255,255,255,0.12);
@@ -71,7 +75,10 @@ def apply_background(bg_path: Path) -> None:
             padding: 16px 16px 14px 16px;
             box-shadow: 0 10px 24px rgba(0,0,0,0.40);
             margin-bottom: 14px;
+            text-align: center;
         }}
+        .opaque-card * {{ text-align: center; }}
+
         .opaque-card h1 {{
             margin: 0;
             font-size: 2.0rem;
@@ -91,25 +98,7 @@ def apply_background(bg_path: Path) -> None:
             line-height: 1.35;
         }}
 
-        /* Центрирование текста в карточке загрузки */
-        .centered-text {{
-            text-align: center;
-        }}
-
-        /* Выравнивание по высоте блоков "Файлы" и "Ссылки" */
-        .upload-grid > div {{
-            height: 100%;
-        }}
-        .upload-box {{
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-start;
-        }}
-        .upload-box .stTextArea, .upload-box .stFileUploader {{
-            flex: 1 1 auto;
-        }}
-
+        /* Экспандеры */
         div[data-testid="stExpander"] > details {{
             background: #0B1220;
             border: 1px solid rgba(255,255,255,0.12);
@@ -122,16 +111,55 @@ def apply_background(bg_path: Path) -> None:
             font-weight: 650;
         }}
 
+        /* ЖЁСТКО фиксируем высоту загрузчиков/полей (и делаем скролл внутри) */
+        /* Важно: в этой странице file_uploader и text_area встречаются по одному разу, поэтому фиксируем глобально */
         div[data-testid="stFileUploader"] section {{
+            height: {UPLOAD_BOX_H}px !important;
+            overflow: auto !important;
             background: #0B1220;
             border: 1px solid rgba(255,255,255,0.12);
             border-radius: 18px;
             padding: 10px;
         }}
 
+        div[data-testid="stTextArea"] textarea {{
+            height: {UPLOAD_BOX_H}px !important;
+        }}
+        div[data-testid="stTextArea"] > div {{
+            background: #0B1220;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 18px;
+            padding: 10px;
+        }}
+
+        /* Кнопки */
         .stButton > button {{
             border-radius: 14px;
             border: 1px solid rgba(255,255,255,0.14);
+        }}
+
+        /* Карточка метрик фиксированной высоты + вертикальное центрирование */
+        .metrics-card {{
+            height: {CHART_H}px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 14px;
+        }}
+        .metric-line {{
+            font-size: 1.05rem;
+            color: rgba(248,250,252,0.92);
+            line-height: 1.25;
+        }}
+        .metric-value {{
+            font-size: 1.6rem;
+            font-weight: 780;
+            margin-top: 4px;
+        }}
+        .muted {{
+            color: rgba(248,250,252,0.70);
+            font-size: 0.95rem;
         }}
 
         a {{ color: #93C5FD !important; }}
@@ -152,11 +180,12 @@ def title_card(title: str) -> None:
     )
 
 
-def opaque_card(title: str, text: str, centered: bool = False) -> None:
-    cls = "centered-text" if centered else ""
+def card(title: str, text: str | None = None) -> None:
+    if text is None:
+        text = ""
     st.markdown(
         f"""
-        <div class="opaque-card {cls}">
+        <div class="opaque-card">
           <h3>{title}</h3>
           <p>{text}</p>
         </div>
@@ -173,11 +202,11 @@ def safe_switch_page(target: str) -> None:
             pass
 
 
-apply_background(BG_JPG)
+apply_background_and_theme(BG_JPG)
 
 
 # -----------------------------
-# Сайдбар: навигация + настройки
+# Sidebar: навигация + настройки
 # -----------------------------
 st.sidebar.markdown("## Навигация")
 if st.sidebar.button("На главную", use_container_width=True):
@@ -191,7 +220,6 @@ img_size = int(size_map[preset])
 
 threshold = st.sidebar.slider("Порог маски", 0.05, 0.95, 0.50, 0.05)
 alpha = st.sidebar.slider("Прозрачность наложения", 0.10, 0.90, 0.45, 0.05)
-
 export_mode = st.sidebar.selectbox("Экспорт", ["ZIP (маски + наложение)", "ZIP (только маски)"], index=0)
 
 
@@ -306,16 +334,8 @@ def load_weights_into_model(model, weights_path: Path):
         return ckpt
 
     if isinstance(ckpt, dict):
-        if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
-            state = ckpt["state_dict"]
-        else:
-            state = ckpt
-
-        cleaned = {}
-        for k, v in state.items():
-            if isinstance(k, str):
-                cleaned[k.replace("module.", "")] = v
-
+        state = ckpt["state_dict"] if ("state_dict" in ckpt and isinstance(ckpt["state_dict"], dict)) else ckpt
+        cleaned = {k.replace("module.", ""): v for k, v in state.items() if isinstance(k, str)}
         model.load_state_dict(cleaned, strict=False)
         return model
 
@@ -335,7 +355,7 @@ def load_model_cached(model_py: str, weights_path: str):
 
 
 # -----------------------------
-# Сегментация: постобработка и визуализация
+# Сегментация: постобработка
 # -----------------------------
 def to_tensor_rgb(img: Image.Image):
     import torch
@@ -390,7 +410,7 @@ def img_png_bytes(img: Image.Image) -> bytes:
 
 
 # -----------------------------
-# Качество модели по валидной выборке: лог + артефакты (если есть)
+# Лог обучения: метрики/графики/сводка
 # -----------------------------
 def load_training_log(path: Path) -> pd.DataFrame | None:
     try:
@@ -415,14 +435,9 @@ def find_metric_col(df: pd.DataFrame, substrs: list[str]) -> str | None:
     return None
 
 
-def find_artifact_image(dir_path: Path, stems: list[str]) -> Path | None:
-    exts = [".png", ".jpg", ".jpeg", ".webp"]
-    for stem in stems:
-        for ext in exts:
-            p = dir_path / f"{stem}{ext}"
-            if p.exists():
-                return p
-    return None
+def fmt_best(value: float, is_loss: bool) -> str:
+    # лосс — минимум, метрики — максимум, формат одинаковый
+    return f"{value:.4f}"
 
 
 # -----------------------------
@@ -432,35 +447,29 @@ title_card("Сегментация аэрокосмических снимков
 
 
 # -----------------------------
-# 2) Загрузка на всю ширину
+# 2) Загрузка (карточка + два блока одинаковой высоты)
 # -----------------------------
-opaque_card(
-    "Загрузка изображений",
-    "Загрузите изображения файлами и/или добавьте прямые ссылки",
-    centered=True,
-)
+card("Загрузка изображений", "Загрузите изображения файлами и/или добавьте прямые ссылки")
 
-st.markdown('<div class="upload-grid">', unsafe_allow_html=True)
 u_cols = st.columns([1, 1], gap="large")
+
 with u_cols[0]:
-    st.markdown('<div class="upload-box">', unsafe_allow_html=True)
+    st.markdown("### Файлами")
     img_files = st.file_uploader(
-        "Загрузка файлами",
+        "Файлами",
         type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
         accept_multiple_files=True,
-        label_visibility="visible",
+        label_visibility="collapsed",
     )
-    st.markdown("</div>", unsafe_allow_html=True)
 
 with u_cols[1]:
-    st.markdown('<div class="upload-box">', unsafe_allow_html=True)
+    st.markdown("### По ссылкам")
     img_urls_text = st.text_area(
-        "Загрузка по ссылкам",
-        height=165,  # подгоняем высоту под визуальное равенство
+        "По ссылкам",
+        height=UPLOAD_BOX_H,  # фиксируем как у file_uploader секции
         placeholder="https://...\nhttps://...",
+        label_visibility="collapsed",
     )
-    st.markdown("</div>", unsafe_allow_html=True)
-st.markdown("</div>", unsafe_allow_html=True)
 
 images = []
 images.extend(_load_images_from_uploads(img_files))
@@ -478,7 +487,7 @@ if images:
 
 
 # -----------------------------
-# 4) Кнопка запуска
+# 4) Запуск
 # -----------------------------
 run_btn = st.button("Запустить сегментацию", type="primary", use_container_width=True)
 
@@ -529,7 +538,7 @@ if run_btn:
             prog.progress(int(idx / len(images) * 100))
         prog.empty()
 
-        opaque_card("Результаты", "Превью и выгрузка результатов одним архивом.")
+        card("Результаты", "Превью и выгрузка результатов одним архивом.")
         for name, orig, overlay, cov in preview_rows:
             with st.expander(f"{name} — доля маски: {cov * 100:.1f}%", expanded=False):
                 c1, c2 = st.columns(2, gap="large")
@@ -554,50 +563,12 @@ if run_btn:
             use_container_width=True,
         )
 
-        # Параметры модели — сразу после результата (логически ожидаемо пользователю)
-        st.divider()
-        opaque_card("Параметры модели", "Ключевые параметры архитектуры и инференса.")
-
-        def count_params(m) -> int:
-            try:
-                return int(sum(p.numel() for p in m.parameters()))
-            except Exception:
-                return 0
-
-        # пытаемся вытащить in/out каналы из сигнатуры класса
-        # (без гарантий — поэтому выводим только если удастся)
-        in_ch = None
-        out_ch = None
-        try:
-            sig = inspect.signature(type(model).__init__)
-            for p in list(sig.parameters.values())[1:]:
-                if p.name in ("in_channels", "n_channels", "channels"):
-                    in_ch = 3
-                if p.name in ("out_channels", "n_class", "n_classes", "num_classes", "classes"):
-                    out_ch = 1
-        except Exception:
-            pass
-
-        p1, p2, p3, p4 = st.columns(4)
-        p1.metric("Архитектура", str(model_name))
-        p2.metric("Размер инференса", f"{img_size}×{img_size}")
-        p3.metric("Порог маски", f"{float(threshold):.2f}")
-        p4.metric("Параметров (шт.)", f"{count_params(model):,}".replace(",", " "))
-
-        if in_ch is not None or out_ch is not None:
-            s = []
-            if in_ch is not None:
-                s.append(f"Входных каналов: {in_ch}")
-            if out_ch is not None:
-                s.append(f"Выходных каналов/классов: {out_ch}")
-            st.caption(" • ".join(s))
-
 
 # -----------------------------
-# 6) Модель и качество (ниже всего)
+# 6) Качество модели (снизу): карточка по центру + графики и лучшие метрики
 # -----------------------------
 st.divider()
-opaque_card("Показатели качества, рассчитаные на валидационной выборке", "Графики и ключевые метрики обучения.")
+card("Показатели качества, рассчитаные на валидационной выборке", "Графики и ключевые метрики обучения.")
 
 log_df = load_training_log(TRAIN_LOG)
 if log_df is None:
@@ -607,8 +578,10 @@ else:
 
     val_loss_col = find_metric_col(log_df, ["val", "valid", "validation", "loss"])
     iou_col = find_metric_col(log_df, ["iou", "jaccard"])
+    dice_col = find_metric_col(log_df, ["dice"])
+    roc_col = find_metric_col(log_df, ["roc"])
+    pr_col = find_metric_col(log_df, ["pr", "ap", "average_precision"])
 
-    # Блок: графики (слева) + лучшие метрики (справа)
     g_col, m_col = st.columns([1.35, 0.65], gap="large")
 
     with g_col:
@@ -621,7 +594,11 @@ else:
                 if c != epoch_col and pd.api.types.is_numeric_dtype(log_df[c])
             ]
             if numeric_cols:
-                selected = st.multiselect("Показатели для графика", options=numeric_cols, default=numeric_cols[:3])
+                selected = st.multiselect(
+                    "Показатели для графика",
+                    options=numeric_cols,
+                    default=numeric_cols[:3],
+                )
                 if selected:
                     long = log_df[[epoch_col] + selected].melt(
                         id_vars=[epoch_col], var_name="Показатель", value_name="Значение"
@@ -640,40 +617,130 @@ else:
                             ],
                         )
                         .interactive()
-                        .properties(height=320)
+                        .properties(height=CHART_H)
                     )
                     st.altair_chart(chart, use_container_width=True)
             else:
                 st.dataframe(log_df.tail(30), use_container_width=True)
 
     with m_col:
-        st.markdown("### Лучшие метрики")
-        # Лучшими считаем: минимум val_loss и максимум IoU (если есть)
+        # Рассчитываем "лучшие" значения
+        best_lines = []
         if val_loss_col is not None:
             best_val_loss = float(log_df[val_loss_col].min())
-            st.metric("Валидационный лосс", f"{best_val_loss:.4f}")
+            best_lines.append(("Валидационный лосс", fmt_best(best_val_loss, is_loss=True)))
         if iou_col is not None:
             best_iou = float(log_df[iou_col].max())
-            st.metric("IoU", f"{best_iou:.4f}")
-
-        # Если есть дополнительные метрики — покажем компактно
-        dice_col = find_metric_col(log_df, ["dice"])
+            best_lines.append(("IoU", fmt_best(best_iou, is_loss=False)))
         if dice_col is not None:
             best_dice = float(log_df[dice_col].max())
-            st.metric("Dice", f"{best_dice:.4f}")
-
-        roc_col = find_metric_col(log_df, ["roc"])
-        pr_col = find_metric_col(log_df, ["pr", "ap", "average_precision"])
+            best_lines.append(("Dice", fmt_best(best_dice, is_loss=False)))
         if roc_col is not None:
-            st.metric("ROC-AUC", f"{float(log_df[roc_col].max()):.4f}")
+            best_roc = float(log_df[roc_col].max())
+            best_lines.append(("ROC-AUC", fmt_best(best_roc, is_loss=False)))
         if pr_col is not None:
-            st.metric("PR-AUC", f"{float(log_df[pr_col].max()):.4f}")
+            best_pr = float(log_df[pr_col].max())
+            best_lines.append(("PR-AUC", fmt_best(best_pr, is_loss=False)))
 
-    # Confusion matrix и кривые — как готовые артефакты обучения, если сохранены
-    st.markdown("### Диагностика качества")
-    cm_img = find_artifact_image(ART_DIR, ["confusion_matrix", "confmat", "cm"])
-    if cm_img:
-        st.image(Image.open(cm_img), caption="Матрица ошибок (валидационная выборка)", use_container_width=True)
+        # Карточка той же высоты, что и график + вертикальное центрирование
+        if best_lines:
+            html_lines = []
+            for label, value in best_lines[:5]:
+                html_lines.append(
+                    f"""
+                    <div class="metric-line">
+                      <div class="muted">{label}</div>
+                      <div class="metric-value">{value}</div>
+                    </div>
+                    """
+                )
+
+            st.markdown(
+                f"""
+                <div class="opaque-card metrics-card">
+                  <h3>Лучшие метрики</h3>
+                  {''.join(html_lines)}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"""
+                <div class="opaque-card metrics-card">
+                  <h3>Лучшие метрики</h3>
+                  <div class="muted">Нет доступных метрик в журнале обучения</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+# -----------------------------
+# 7) Данные об обучении (в самом низу)
+# -----------------------------
+st.divider()
+card("Данные об обучении", "Сводка по обучению модели и настройкам эксперимента.")
+
+train_df = load_training_log(TRAIN_LOG)
+epochs_text = "—"
+if train_df is not None:
+    epoch_col = pick_epoch_col(train_df)
+    if epoch_col is not None and pd.api.types.is_numeric_dtype(train_df[epoch_col]):
+        epochs_text = str(int(train_df[epoch_col].max()) + 1)
+    else:
+        epochs_text = str(len(train_df))
+
+# пытаемся достать пару типовых параметров из лога (если они туда писались)
+batch_col = find_metric_col(train_df, ["batch"]) if train_df is not None else None
+imgsz_col = find_metric_col(train_df, ["img", "imgsz", "image", "size"]) if train_df is not None else None
+lr_col = find_metric_col(train_df, ["lr"]) if train_df is not None else None
+opt_col = find_metric_col(train_df, ["optim", "optimizer"]) if train_df is not None else None
+
+batch_text = "—"
+imgsz_text = "—"
+lr_text = "—"
+opt_text = "—"
+if train_df is not None and len(train_df) > 0:
+    last = train_df.tail(1).iloc[0]
+    if batch_col is not None:
+        try:
+            batch_text = str(int(float(last[batch_col])))
+        except Exception:
+            batch_text = str(last[batch_col])
+    if imgsz_col is not None:
+        try:
+            imgsz_text = str(last[imgsz_col])
+        except Exception:
+            imgsz_text = "—"
+    if lr_col is not None:
+        try:
+            lr_text = f"{float(last[lr_col]):.6f}"
+        except Exception:
+            lr_text = str(last[lr_col])
+    if opt_col is not None:
+        opt_text = str(last[opt_col])
+
+# модельный класс (из model_class.py), без лишних деталей пользователю
+try:
+    _m, model_name_bottom = load_model_cached(MODEL_PY.as_posix(), WEIGHTS_PTH.as_posix())
+except Exception:
+    model_name_bottom = "—"
+
+st.markdown(
+    f"""
+    <div class="opaque-card">
+      <h3>Параметры</h3>
+      <div class="metric-line"><div class="muted">Модель</div><div class="metric-value">{model_name_bottom}</div></div>
+      <div class="metric-line"><div class="muted">Количество эпох</div><div class="metric-value">{epochs_text}</div></div>
+      <div class="metric-line"><div class="muted">Размер изображения</div><div class="metric-value">{imgsz_text}</div></div>
+      <div class="metric-line"><div class="muted">Batch</div><div class="metric-value">{batch_text}</div></div>
+      <div class="metric-line"><div class="muted">Learning rate</div><div class="metric-value">{lr_text}</div></div>
+      <div class="metric-line"><div class="muted">Оптимизатор</div><div class="metric-value">{opt_text}</div></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.divider()
 st.caption("Работу выполнили студенты Эльбруса — Игорь Никоновский и Сергей Белькин")
