@@ -16,7 +16,7 @@ APP_SUBTITLE = "Компьютерное зрение для прикладны�
 PAGES_DIR = Path("pages")
 FACE_PAGE = PAGES_DIR / "facescanner.py"
 CANCER_PAGE = PAGES_DIR / "cancer.py"
-FORREST_PAGE = PAGES_DIR / "forrest.py"  # если страницы нет — кнопка будет отключена
+FORREST_PAGE = PAGES_DIR / "forrest.py"  # важно: именно forrest.py (как у вас в проекте)
 
 BG_PATH = Path("screen.jpg")  # фон лежит в корне
 
@@ -55,7 +55,6 @@ header[data-testid="stHeader"] {{
   background: rgba(0,0,0,0);
 }}
 
-/* Sidebar */
 section[data-testid="stSidebar"] {{
   background:#0B1220;
   border-right:1px solid rgba(255,255,255,0.10);
@@ -64,7 +63,6 @@ section[data-testid="stSidebar"] * {{
   color:#F8FAFC !important;
 }}
 
-/* Подложка: тексты по центру */
 .opaque-card {{
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
@@ -99,7 +97,6 @@ section[data-testid="stSidebar"] * {{
 }}
 a {{ color:#93C5FD !important; }}
 
-/* Карточки решений */
 .solution-card {{
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
@@ -139,12 +136,15 @@ def _card(title: str, text: str | None = None) -> None:
 
 
 def nav_button(page_path: Path | str, label: str, icon: str | None = None, *, location: str = "main") -> None:
+    """
+    Надёжная навигация без st.page_link.
+    Если файла нет/нет switch_page — кнопка будет отключена (без тех. сообщений на главной).
+    """
     p = Path(page_path) if isinstance(page_path, str) else page_path
     text = f"{icon} {label}" if icon else label
 
     exists = p.exists()
     has_switch = hasattr(st, "switch_page")
-
     container = st.sidebar if location == "sidebar" else st
 
     if exists and has_switch:
@@ -165,16 +165,14 @@ def render_header() -> None:
         initial_sidebar_state="expanded",
     )
     _apply_background(BG_PATH)
-
     _title_card(APP_TITLE, APP_SUBTITLE)
 
 
 def render_sidebar() -> None:
     st.sidebar.markdown("### Модули")
-
     nav_button(FACE_PAGE, "FaceScanner — маскировка лиц", "🕵️", location="sidebar")
     nav_button(CANCER_PAGE, "BrainScan Detect — анализ снимков", "🧠", location="sidebar")
-    nav_button(FORREST_PAGE, "Сегментация аэрокосмических снимков", "🛰️", location="sidebar")
+    nav_button(FORREST_PAGE, "Сегментация леса на аэрокосмических снимках", "🌲", location="sidebar")
 
     st.sidebar.divider()
     st.sidebar.markdown("### Сессия")
@@ -188,11 +186,13 @@ def render_hero() -> None:
         "в интерфейс для конечного пользователя.",
     )
 
-    c1, c2 = st.columns(2, gap="large")
+    c1, c2, c3 = st.columns(3, gap="large")
     with c1:
         nav_button(FACE_PAGE, "Открыть FaceScanner", "🕵️", location="main")
     with c2:
         nav_button(CANCER_PAGE, "Открыть BrainScan Detect", "🧠", location="main")
+    with c3:
+        nav_button(FORREST_PAGE, "Открыть сегментацию леса", "🌲", location="main")
 
 
 def render_solution_cards() -> None:
@@ -230,14 +230,15 @@ def render_solution_cards() -> None:
         st.markdown(
             """
 <div class="solution-card">
-  <div class="solution-title">Сегментация аэрокосмических снимков</div>
-  <div class="solution-sub">Спутниковая аналитика</div>
-  <div class="solution-desc">Сегментация покрытий на снимках для задач мониторинга и оценки изменений территорий.</div>
+  <div class="solution-title">Сегментация леса</div>
+  <div class="solution-sub">Аэрокосмические снимки</div>
+  <div class="solution-desc">Семантическая сегментация: выделение лесных массивов маской на аэрокосмических снимках.</div>
 </div>
             """,
             unsafe_allow_html=True,
         )
-        nav_button(FORREST_PAGE, "Перейти", "🛰️", location="main")
+        # ВАЖНО: здесь теперь реальная ссылка/кнопка на pages/forrest.py
+        nav_button(FORREST_PAGE, "Перейти", "🌲", location="main")
 
 
 def render_flow() -> None:
