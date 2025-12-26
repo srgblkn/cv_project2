@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import base64
 import io
-import zipfile
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -42,7 +42,7 @@ st.set_page_config(page_title="FaceScanner — маскировка лиц", pag
 # Дизайн
 # -----------------------------
 UPLOAD_BOX_H = 120
-CHART_H = 440  # увеличенная высота графиков и "лучших метрик"
+CHART_H = 460  # чуть выше, чтобы текст точно влезал
 
 
 def apply_background_and_theme(bg_path: Path | None) -> None:
@@ -382,12 +382,10 @@ if st.sidebar.button("На главную", use_container_width=True):
     safe_switch_page("app.py")
 
 st.sidebar.divider()
-
 conf_th = st.sidebar.slider("Порог уверенности", 0.05, 0.95, 0.25, 0.05)
 iou_th = st.sidebar.slider("Порог IoU", 0.10, 0.90, 0.50, 0.05)
 
 st.sidebar.divider()
-
 mask_ui = st.sidebar.selectbox("Режим маскировки", ["Размытие", "Пикселизация", "Заливка"], index=0)
 padding = st.sidebar.slider("Отступ вокруг лица", 0.0, 0.5, 0.10, 0.02)
 
@@ -417,9 +415,9 @@ params = {
     "Задача": pick_first(args, ["task"]),
     "Модель": pick_first(args, ["model", "weights"]),
     "Эпохи": pick_first(args, ["epochs"]),
-    "Batch": pick_first(args, ["batch", "batch_size"]),
+    "Размер батча": pick_first(args, ["batch", "batch_size"]),
     "Размер изображения": pick_first(args, ["imgsz", "img_size", "img"]),
-    "Learning rate": pick_first(args, ["lr0", "lr"]),
+    "Скорость обучения": pick_first(args, ["lr0", "lr"]),
 }
 
 results_df: pd.DataFrame | None = None
@@ -559,7 +557,7 @@ if run_btn:
 
 
 # -----------------------------
-# 6) Качество модели: один график с подписями осей + PR-AUC/ROC-AUC + Confusion Matrix по лучшей эпохе
+# 6) Качество модели: один график с подписями осей + PR-AUC/ROC-AUC + матрица ошибок по лучшей эпохе
 # -----------------------------
 st.divider()
 
@@ -573,42 +571,34 @@ if results_df is not None:
     col_precision = _find_col(df_plot, ["precision"])
     col_recall = _find_col(df_plot, ["recall"])
     col_map50 = _find_col(df_plot, ["map50"])
-    col_map5095 = _find_col(df_plot, ["map50-95", "map50_95"])
 
-    # PR-AUC для детекции (AP@0.5) — берём mAP50
+    # PR-AUC (для детекции используем AP@0.5 как прокси)
     if col_map50 is not None and "PR-AUC" not in df_plot.columns:
         df_plot["PR-AUC"] = pd.to_numeric(df_plot[col_map50], errors="coerce")
 
-    # ROC-AUC (число): приближение по агрегированным метрикам
+    # ROC-AUC: без сырых предсказаний это только агрегированная оценка
     if col_precision is not None and col_recall is not None and "ROC-AUC" not in df_plot.columns:
         p = pd.to_numeric(df_plot[col_precision], errors="coerce")
         r = pd.to_numeric(df_plot[col_recall], errors="coerce")
         df_plot["ROC-AUC"] = (p + r) / 2.0
 
-card("Показатели качества, рассчитанные на валидационной выборке", "Выберите показатели для отображения")
+card("Показатели качества, рассчитанные на валидационной выборке", "Выберите показатель для отображения")
 
 if df_plot is None or epoch_col is None:
     if results_df is not None:
         st.dataframe(results_df.tail(20), use_container_width=True)
 else:
-    # кандидаты на Y (один показатель)
     y_candidates = [
         c for c in df_plot.columns
         if c != epoch_col and pd.api.types.is_numeric_dtype(df_plot[c])
     ]
 
-    # дефолтно показываем PR-AUC (если есть), иначе mAP50-95, иначе первый числовой
-    default_y = None
-    if "PR-AUC" in y_candidates:
-        default_y = "PR-AUC"
-    else:
-        c5095 = _find_col(df_plot, ["map50-95", "map50_95"])
-        if c5095 in y_candidates:
-            default_y = c5095
-        elif y_candidates:
-            default_y = y_candidates[0]
-
-    y_axis = st.selectbox("Показатель", options=y_candidates, index=y_candidates.index(default_y) if default_y in y_candidates else 0)
+    default_y = "PR-AUC" if "PR-AUC" in y_candidates else (y_candidates[0] if y_candidates else None)
+    y_axis = st.selectbox(
+        "Показатель",
+        options=y_candidates,
+        index=y_candidates.index(default_y) if (default_y in y_candidates) else 0,
+    )
 
     card("Интерактивная визуализация динамики метрик", "")
 
@@ -637,7 +627,6 @@ else:
         st.altair_chart(chart, use_container_width=True)
 
     with m_col:
-        # Лучшие метрики: берём значения на ЛУЧШЕЙ эпохе (по PR-AUC, иначе по map50)
         score_col = "PR-AUC" if "PR-AUC" in df_plot.columns else _find_col(df_plot, ["map50"])
         best_row = None
         best_epoch_val = None
@@ -676,44 +665,36 @@ else:
         if roc is not None:
             lines.append(("ROC-AUC", roc))
 
-        m5095 = _val(["map50-95", "map50_95"])
-        if m5095 is not None:
-            lines.append(("mAP50-95", m5095))
-
         prec = _val(["precision"])
         if prec is not None:
-            lines.append(("Precision", prec))
+            lines.append(("Точность", prec))
 
         rec = _val(["recall"])
         if rec is not None:
-            lines.append(("Recall", rec))
+            lines.append(("Полнота", rec))
 
-        box_loss = _val(["box_loss"])
-        if box_loss is not None:
-            lines.append(("Box loss", box_loss))
-
-        blocks = []
-        for label, value in lines[:6]:
-            blocks.append(
-                f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>'
-            )
-
+        blocks = [
+            f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>'
+            for (label, value) in lines[:6]
+        ]
+        metrics_html = "".join(blocks) if blocks else '<div class="muted">Недоступно</div>'
         epoch_txt = f"{best_epoch_val}" if best_epoch_val is not None else "—"
+
         st.markdown(
-            f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3>'
+            f'<div class="opaque-card metrics-card">'
+            f'<h3>Лучшие метрики</h3>'
             f'<div class="muted">Лучшая эпоха: {epoch_txt}</div>'
-            f'{"".join(blocks) if blocks else "<div class=\\"muted\\">Недоступно</div>"}'
+            f'{metrics_html}'
             f'</div>',
             unsafe_allow_html=True,
         )
 
-    # Confusion Matrix по лучшей эпохе (оценка по precision/recall этой эпохи)
     st.markdown(
-        '<div class="opaque-card"><h3>Матрица ошибок (лучшая эпоха)</h3><p>Оценка построена по метрикам выбранной лучшей эпохи обучения</p></div>',
+        '<div class="opaque-card"><h3>Матрица ошибок (лучшая эпоха)</h3><p>Приближённая оценка по precision/recall лучшей эпохи</p></div>',
         unsafe_allow_html=True,
     )
 
-    # берём precision/recall строго из лучшей эпохи (best_row уже найден выше)
+    # берём precision/recall строго из лучшей эпохи
     col_precision = _find_col(df_plot, ["precision"])
     col_recall = _find_col(df_plot, ["recall"])
 
@@ -790,9 +771,9 @@ st.divider()
 epochs_text = params.get("Эпохи", "—")
 model_text = params.get("Модель", "—")
 task_text = params.get("Задача", "—")
-batch_text = params.get("Batch", "—")
+batch_text = params.get("Размер батча", "—")
 imgsz_text = params.get("Размер изображения", "—")
-lr_text = params.get("Learning rate", "—")
+lr_text = params.get("Скорость обучения", "—")
 
 st.markdown(
     f'<div class="opaque-card">'
@@ -801,9 +782,9 @@ st.markdown(
     f'<div class="param-cell"><div class="param-label">Задача</div><div class="param-val">{task_text}</div></div>'
     f'<div class="param-cell"><div class="param-label">Модель</div><div class="param-val">{model_text}</div></div>'
     f'<div class="param-cell"><div class="param-label">Количество эпох</div><div class="param-val">{epochs_text}</div></div>'
-    f'<div class="param-cell"><div class="param-label">Batch</div><div class="param-val">{batch_text}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Размер батча</div><div class="param-val">{batch_text}</div></div>'
     f'<div class="param-cell"><div class="param-label">Размер изображения</div><div class="param-val">{imgsz_text}</div></div>'
-    f'<div class="param-cell"><div class="param-label">Learning rate</div><div class="param-val">{lr_text}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Скорость обучения</div><div class="param-val">{lr_text}</div></div>'
     f'</div>'
     f'</div>',
     unsafe_allow_html=True,
