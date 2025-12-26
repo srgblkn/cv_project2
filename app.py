@@ -16,7 +16,19 @@ APP_SUBTITLE = "Компьютерное зрение для прикладны�
 PAGES_DIR = Path("pages")
 FACE_PAGE = PAGES_DIR / "facescanner.py"
 CANCER_PAGE = PAGES_DIR / "cancer.py"
-FORREST_PAGE = PAGES_DIR / "forrest.py"  # важно: именно forrest.py (как у вас в проекте)
+
+# ВАЖНО: у тебя в интерфейсе видно "forest" => файл чаще всего pages/forest.py
+# Делаем устойчиво: поддерживаем оба варианта имени.
+def resolve_page(*names: str) -> Path:
+    for n in names:
+        p = PAGES_DIR / n
+        if p.exists():
+            return p
+    # если ни один не найден — возвращаем последний (кнопка будет disabled)
+    return PAGES_DIR / names[-1]
+
+
+FOREST_PAGE = resolve_page("forest.py", "forrest.py")
 
 BG_PATH = Path("screen.jpg")  # фон лежит в корне
 
@@ -136,10 +148,6 @@ def _card(title: str, text: str | None = None) -> None:
 
 
 def nav_button(page_path: Path | str, label: str, icon: str | None = None, *, location: str = "main") -> None:
-    """
-    Надёжная навигация без st.page_link.
-    Если файла нет/нет switch_page — кнопка будет отключена (без тех. сообщений на главной).
-    """
     p = Path(page_path) if isinstance(page_path, str) else page_path
     text = f"{icon} {label}" if icon else label
 
@@ -172,7 +180,7 @@ def render_sidebar() -> None:
     st.sidebar.markdown("### Модули")
     nav_button(FACE_PAGE, "FaceScanner — маскировка лиц", "🕵️", location="sidebar")
     nav_button(CANCER_PAGE, "BrainScan Detect — анализ снимков", "🧠", location="sidebar")
-    nav_button(FORREST_PAGE, "Сегментация леса на аэрокосмических снимках", "🌲", location="sidebar")
+    nav_button(FOREST_PAGE, "Сегментация леса на аэрокосмических снимках", "🌲", location="sidebar")
 
     st.sidebar.divider()
     st.sidebar.markdown("### Сессия")
@@ -192,7 +200,7 @@ def render_hero() -> None:
     with c2:
         nav_button(CANCER_PAGE, "Открыть BrainScan Detect", "🧠", location="main")
     with c3:
-        nav_button(FORREST_PAGE, "Открыть сегментацию леса", "🌲", location="main")
+        nav_button(FOREST_PAGE, "Открыть сегментацию леса", "🌲", location="main")
 
 
 def render_solution_cards() -> None:
@@ -237,15 +245,13 @@ def render_solution_cards() -> None:
             """,
             unsafe_allow_html=True,
         )
-        # ВАЖНО: здесь теперь реальная ссылка/кнопка на pages/forrest.py
-        nav_button(FORREST_PAGE, "Перейти", "🌲", location="main")
+        nav_button(FOREST_PAGE, "Перейти", "🌲", location="main")
 
 
 def render_flow() -> None:
     st.markdown('<div class="opaque-card"><h3>Как пользоваться</h3></div>', unsafe_allow_html=True)
 
     x1, x2, x3 = st.columns(3, gap="large")
-
     with x1:
         _card("1. Загрузка", "Загрузите один или несколько файлов. В некоторых модулях доступна загрузка по ссылке.")
     with x2:
