@@ -689,6 +689,6 @@ card_html(kpis_html)
 
 st.divider()
 st.markdown(
-    '<div class="opaque-card"><p>Работу выполнили студенты Эльбруса — Игорь Никоновский и Сергей Белькин</p></div>',
+    '<div class="opaque-card"><p>Работу выполнили студенты Эльбруса — Игорь Никовский и Сергей Белькин</p></div>',
     unsafe_allow_html=True,
 )
