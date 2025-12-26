@@ -1,4 +1,3 @@
-# pages/facescanner.py
 from __future__ import annotations
 
 import base64
@@ -11,6 +10,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
 from PIL import Image, ImageDraw, ImageFilter
 
 try:
@@ -20,7 +20,7 @@ except Exception:
 
 
 # -----------------------------
-# Paths (строго по вашим путям/именам)
+# Пути (строго по вашим путям/именам)
 # -----------------------------
 THIS_DIR = Path(__file__).resolve().parent
 FB_DIR = THIS_DIR / "facebook"
@@ -32,116 +32,152 @@ BG_JPG_LIST = sorted(FB_DIR.glob("*.jpg"))  # фон: любой *.jpg
 
 
 # -----------------------------
-# Page config
+# Страница
 # -----------------------------
 st.set_page_config(page_title="FaceScanner — маскировка лиц", page_icon="🕵️", layout="wide")
 
 
 # -----------------------------
-# UI styling: background + opaque cards + high contrast
+# Дизайн
 # -----------------------------
-def apply_background_and_contrast(bg_path: Path | None) -> None:
+UPLOAD_BOX_H = 120  # компактная зона загрузки (со скроллом)
+CHART_H = 340       # одинаковая высота графика и подложки "лучшие метрики"
+
+
+def apply_background_and_theme(bg_path: Path | None) -> None:
     bg_css = ""
     if bg_path and bg_path.exists():
         b64 = base64.b64encode(bg_path.read_bytes()).decode("utf-8")
-        bg_css = f"""
-        .stApp {{
-            background-image: url("data:image/jpeg;base64,{b64}");
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-        }}
-        """
+        bg_css = (
+            '.stApp{'
+            f'background-image:url("data:image/jpeg;base64,{b64}");'
+            'background-size:cover;'
+            'background-position:center;'
+            'background-attachment:fixed;'
+            '}'
+        )
 
     st.markdown(
         f"""
-        <style>
-        {bg_css}
+<style>
+{bg_css}
 
-        .stApp, .stMarkdown, .stText, .stCaption, .stWrite {{
-            color: #F8FAFC;
-        }}
+.stApp, .stMarkdown, .stText, .stCaption, .stWrite {{ color:#F8FAFC; }}
+header[data-testid="stHeader"] {{ background: rgba(0,0,0,0); }}
 
-        header[data-testid="stHeader"] {{
-            background: rgba(0,0,0,0);
-        }}
+section[data-testid="stSidebar"] {{
+  background:#0B1220;
+  border-right:1px solid rgba(255,255,255,0.10);
+}}
+section[data-testid="stSidebar"] * {{ color:#F8FAFC !important; }}
 
-        /* Sidebar: непрозрачный */
-        section[data-testid="stSidebar"] {{
-            background: #0B1220;
-            border-right: 1px solid rgba(255,255,255,0.10);
-        }}
-        section[data-testid="stSidebar"] * {{
-            color: #F8FAFC !important;
-        }}
+/* Подложка: все тексты по центру */
+.opaque-card {{
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:16px 16px 14px 16px;
+  box-shadow:0 10px 24px rgba(0,0,0,0.40);
+  margin-bottom:14px;
+  text-align:center;
+}}
+.opaque-card * {{ text-align:center; }}
 
-        /* Opaque card */
-        .opaque-card {{
-            background: #0B1220;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 18px;
-            padding: 16px 16px 14px 16px;
-            box-shadow: 0 10px 24px rgba(0,0,0,0.40);
-            margin-bottom: 14px;
-        }}
-        .opaque-card h3 {{
-            margin: 0;
-            font-size: 1.25rem;
-            font-weight: 750;
-            color: #F8FAFC;
-        }}
-        .opaque-card p {{
-            margin: 6px 0 0 0;
-            color: rgba(248,250,252,0.85);
-            line-height: 1.35;
-        }}
+.opaque-card h1 {{
+  margin:0;
+  font-size:2.0rem;
+  font-weight:780;
+  line-height:1.15;
+}}
+.opaque-card h3 {{
+  margin:0;
+  font-size:1.25rem;
+  font-weight:750;
+}}
+.opaque-card p {{
+  margin:8px 0 0 0;
+  color:rgba(248,250,252,0.85);
+  line-height:1.35;
+}}
 
-        /* Expander: непрозрачный */
-        div[data-testid="stExpander"] > details {{
-            background: #0B1220;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 18px;
-            padding: 10px 12px;
-            box-shadow: 0 10px 24px rgba(0,0,0,0.30);
-        }}
-        div[data-testid="stExpander"] summary {{
-            color: #F8FAFC !important;
-            font-weight: 650;
-        }}
+/* Экспандер: непрозрачный */
+div[data-testid="stExpander"] > details {{
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:10px 12px;
+  box-shadow:0 10px 24px rgba(0,0,0,0.30);
+}}
+div[data-testid="stExpander"] summary {{
+  color:#F8FAFC !important;
+  font-weight:650;
+}}
 
-        /* File uploader: непрозрачный */
-        div[data-testid="stFileUploader"] section {{
-            background: #0B1220;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 18px;
-            padding: 10px;
-        }}
+/* File uploader: фиксируем компактную высоту */
+div[data-testid="stFileUploader"] section {{
+  height:{UPLOAD_BOX_H}px !important;
+  overflow:auto !important;
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:18px;
+  padding:10px;
+}}
 
-        /* Buttons */
-        .stButton > button {{
-            border-radius: 14px;
-            border: 1px solid rgba(255,255,255,0.14);
-        }}
+.stButton > button {{
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,0.14);
+}}
 
-        a {{
-            color: #93C5FD !important;
-        }}
-        </style>
+a {{ color:#93C5FD !important; }}
+
+/* Лучшие метрики — фикс по высоте, вертикальное центрирование */
+.metrics-card {{
+  height:{CHART_H}px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  gap:12px;
+}}
+.metric-line {{ line-height:1.2; }}
+.muted {{ color:rgba(248,250,252,0.70); font-size:0.95rem; }}
+.metric-value {{ font-size:1.55rem; font-weight:780; margin-top:4px; }}
+
+/* Параметры "в строку" */
+.param-grid {{
+  display:grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap:14px;
+  margin-top:12px;
+}}
+.param-cell {{ background:transparent; border:none; padding:6px 4px; }}
+.param-label {{ color:rgba(248,250,252,0.70); font-size:0.92rem; margin-bottom:4px; }}
+.param-val {{ font-size:1.10rem; font-weight:780; color:rgba(248,250,252,0.95); }}
+
+/* Мини-чип под изображениями (чтобы подписи тоже были "на подложке") */
+.name-chip {{
+  background:#0B1220;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:12px;
+  padding:6px 10px;
+  margin-top:8px;
+  text-align:center;
+  font-size:0.85rem;
+  color:rgba(248,250,252,0.90);
+}}
+</style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def opaque_card(title: str, text: str) -> None:
-    st.markdown(
-        f"""
-        <div class="opaque-card">
-          <h3>{title}</h3>
-          <p>{text}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def title_card(title: str) -> None:
+    st.markdown(f'<div class="opaque-card"><h1>{title}</h1></div>', unsafe_allow_html=True)
+
+
+def card(title: str, text: str | None = None) -> None:
+    text = text or ""
+    st.markdown(f'<div class="opaque-card"><h3>{title}</h3><p>{text}</p></div>', unsafe_allow_html=True)
 
 
 def safe_switch_page(target: str) -> None:
@@ -149,103 +185,71 @@ def safe_switch_page(target: str) -> None:
         try:
             st.switch_page(target)
         except Exception:
-            st.info("Переход недоступен в этой среде. Используйте меню слева.")
-    else:
-        st.info("Переход недоступен в текущей версии Streamlit. Используйте меню слева.")
+            pass
 
 
 # -----------------------------
-# Background picker (строго *.jpg)
+# Фон (строго *.jpg)
 # -----------------------------
 bg_path: Path | None = None
 if len(BG_JPG_LIST) == 1:
     bg_path = BG_JPG_LIST[0]
 elif len(BG_JPG_LIST) > 1:
-    # Выбор только если есть из чего выбирать
-    bg_name = st.sidebar.selectbox("Фон страницы (*.jpg)", options=[p.name for p in BG_JPG_LIST], index=0)
+    bg_name = st.sidebar.selectbox("Фон страницы", options=[p.name for p in BG_JPG_LIST], index=0)
     bg_path = FB_DIR / bg_name
 
-apply_background_and_contrast(bg_path)
+apply_background_and_theme(bg_path)
 
 
 # -----------------------------
-# Minimal YAML parsing (без pyyaml)
+# Мини-парсер YAML (без pyyaml)
 # -----------------------------
 def parse_yaml_shallow(path: Path) -> Dict[str, str]:
-    """
-    Достаём простые key: value из args.yaml (без вложенных структур).
-    Этого достаточно для task/model/epochs/batch/imgsz и пары дополнительных.
-    """
     out: Dict[str, str] = {}
     if not path.exists():
         return out
-
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         s = line.strip()
         if not s or s.startswith("#") or ":" not in s:
             continue
-        key, val = s.split(":", 1)
-        key = key.strip()
-        val = val.strip().strip("'").strip('"')
-        # пропускаем явно “сложные” блоки
-        if val in ("", "null", "None") or val.endswith("{") or val.endswith("["):
+        k, v = s.split(":", 1)
+        k = k.strip()
+        v = v.strip().strip("'").strip('"')
+        if v in ("", "null", "None") or v.endswith("{") or v.endswith("["):
             continue
-        out[key] = val
+        out[k] = v
     return out
 
 
 def pick_first(args: Dict[str, str], keys: List[str]) -> str:
     for k in keys:
-        if k in args and str(args[k]).strip() != "":
+        if k in args and str(args[k]).strip():
             return str(args[k]).strip()
     return "—"
 
 
-# -----------------------------
-# Weights validation (LFS pointer detection)
-# -----------------------------
 def is_git_lfs_pointer(file_path: Path) -> bool:
-    if not file_path.exists():
-        return False
     try:
         head = file_path.read_bytes()[:200]
         txt = head.decode("utf-8", errors="ignore")
-        return "git-lfs" in txt and "version https://git-lfs.github.com/spec" in txt
+        return "git-lfs" in txt and "git-lfs.github.com/spec" in txt
     except Exception:
         return False
 
 
-def ensure_weights_ok_or_stop(path: Path) -> None:
-    if not path.exists():
-        st.error(f"Не найден файл весов: `{path.as_posix()}`")
-        st.stop()
-
-    if is_git_lfs_pointer(path):
-        st.error(
-            "Файл `best-13.pt` в деплое похож на Git LFS pointer (это текстовый файл-ссылка, а не веса). "
-            "Из-за этого `torch.load()` падает с UnpicklingError. "
-            "Нужно, чтобы в репозитории/деплое был именно бинарный файл весов (или хранить веса вне GitHub и скачивать их в рантайме)."
-        )
-        st.caption(
-            "Проверка: откройте `pages/facebook/best-13.pt` в GitHub. "
-            "Если там текст с `version https://git-lfs...` — это pointer."
-        )
-        st.stop()
-
-
 # -----------------------------
-# Model + inference helpers
+# Модель + инференс
 # -----------------------------
 @st.cache_resource(show_spinner=False)
 def load_yolo_model(weights_path: str):
     if YOLO is None:
-        raise RuntimeError("ultralytics не установлен. Проверь requirements.txt.")
+        raise RuntimeError("ultralytics недоступен")
     return YOLO(weights_path)
 
 
 @dataclass
 class MaskConfig:
-    mode: str  # Blur / Pixelate / Solid
+    mode: str  # "Blur" | "Pixelate" | "Solid"
     blur_radius: int = 12
     pixel_size: int = 12
     solid_color: Tuple[int, int, int] = (0, 0, 0)
@@ -307,70 +311,53 @@ def predict_boxes(model, img_rgb: np.ndarray, conf: float, iou: float, max_det: 
 
 
 # -----------------------------
-# Header
+# Sidebar: навигация + настройки (без лишних текстов)
 # -----------------------------
-opaque_card(
-    "FaceScanner",
-    "Детекция лиц и маскировка. Поддерживается пакетная загрузка и скачивание результата одним архивом.",
-)
-
-top_l, top_r = st.columns([1, 1], gap="large")
-with top_l:
-    if st.button("← На главную", use_container_width=True):
-        safe_switch_page("app.py")
-with top_r:
-    if bg_path and bg_path.exists():
-        st.download_button(
-            "Скачать фон (JPG)",
-            data=bg_path.read_bytes(),
-            file_name=bg_path.name,
-            mime="image/jpeg",
-            use_container_width=True,
-        )
-
-
-# -----------------------------
-# Sidebar controls (кратко)
-# -----------------------------
-st.sidebar.markdown("## Настройки")
-conf_th = st.sidebar.slider("Confidence", 0.05, 0.95, 0.25, 0.05)
-iou_th = st.sidebar.slider("IoU", 0.10, 0.90, 0.50, 0.05)
-max_det = st.sidebar.number_input("Max detections", min_value=1, max_value=500, value=50, step=1)
+if st.sidebar.button("На главную", use_container_width=True):
+    safe_switch_page("app.py")
 
 st.sidebar.divider()
-mask_mode = st.sidebar.selectbox("Маскировка", ["Blur", "Pixelate", "Solid"], index=0)
-padding = st.sidebar.slider("Padding", 0.0, 0.5, 0.10, 0.02)
+
+conf_th = st.sidebar.slider("Порог уверенности", 0.05, 0.95, 0.25, 0.05)
+iou_th = st.sidebar.slider("Порог IoU", 0.10, 0.90, 0.50, 0.05)
+max_det = st.sidebar.number_input("Максимум детекций", min_value=1, max_value=500, value=50, step=1)
+
+st.sidebar.divider()
+
+mask_ui = st.sidebar.selectbox("Режим маскировки", ["Размытие", "Пикселизация", "Заливка"], index=0)
+padding = st.sidebar.slider("Отступ вокруг лица", 0.0, 0.5, 0.10, 0.02)
 
 blur_radius = 12
 pixel_size = 12
 solid_color = (0, 0, 0)
 
-if mask_mode == "Blur":
-    blur_radius = st.sidebar.slider("Blur radius", 1, 40, 12, 1)
-elif mask_mode == "Pixelate":
-    pixel_size = st.sidebar.slider("Pixel size", 2, 40, 12, 1)
+if mask_ui == "Размытие":
+    blur_radius = st.sidebar.slider("Сила размытия", 1, 40, 12, 1)
+    mask_mode = "Blur"
+elif mask_ui == "Пикселизация":
+    pixel_size = st.sidebar.slider("Размер пикселя", 2, 40, 12, 1)
+    mask_mode = "Pixelate"
 else:
-    color_name = st.sidebar.selectbox("Solid color", ["Black", "White", "Gray"], index=0)
-    solid_color = {"Black": (0, 0, 0), "White": (255, 255, 255), "Gray": (120, 120, 120)}[color_name]
+    color_name = st.sidebar.selectbox("Цвет заливки", ["Чёрный", "Белый", "Серый"], index=0)
+    solid_color = {"Чёрный": (0, 0, 0), "Белый": (255, 255, 255), "Серый": (120, 120, 120)}[color_name]
+    mask_mode = "Solid"
 
 mask_cfg = MaskConfig(mode=mask_mode, blur_radius=blur_radius, pixel_size=pixel_size, solid_color=solid_color, padding=padding)
 
 
 # -----------------------------
-# Right column: Training params + charts (по запросу)
+# Данные обучения (args.yaml + results.csv)
 # -----------------------------
 args = parse_yaml_shallow(ARGS_PATH)
 
-params_rows = [
-    ("Задача", pick_first(args, ["task"])),
-    ("Модель", pick_first(args, ["model", "weights"])),
-    ("Эпохи", pick_first(args, ["epochs"])),
-    ("Batch", pick_first(args, ["batch", "batch_size"])),
-    ("Image size", pick_first(args, ["imgsz", "img_size", "img"])),
-    ("Learning rate", pick_first(args, ["lr0", "lr"])),
-    ("Optimizer", pick_first(args, ["optimizer"])),
-]
-params_df = pd.DataFrame(params_rows, columns=["Параметр", "Значение"])
+params = {
+    "Задача": pick_first(args, ["task"]),
+    "Модель": pick_first(args, ["model", "weights"]),
+    "Эпохи": pick_first(args, ["epochs"]),
+    "Batch": pick_first(args, ["batch", "batch_size"]),
+    "Размер изображения": pick_first(args, ["imgsz", "img_size", "img"]),
+    "Learning rate": pick_first(args, ["lr0", "lr"]),
+}
 
 results_df: pd.DataFrame | None = None
 if RESULTS_PATH.exists():
@@ -381,150 +368,251 @@ if RESULTS_PATH.exists():
 
 
 # -----------------------------
-# Main layout
+# 1) Заголовок
 # -----------------------------
-left, right = st.columns([1.25, 1.0], gap="large")
-
-with left:
-    opaque_card("Загрузка изображений", "Загрузите один или несколько файлов. Ниже появится предпросмотр.")
-    uploads = st.file_uploader(
-        "Images",
-        type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
-        accept_multiple_files=True,
-        label_visibility="collapsed",
-    )
-
-    # Предпросмотр (чтобы “после загрузки фото — видно”)
-    if uploads:
-        with st.expander("Предпросмотр загруженных файлов", expanded=True):
-            cols = st.columns(4)
-            for i, up in enumerate(uploads):
-                try:
-                    img = Image.open(up).convert("RGB")
-                    cols[i % 4].image(img, caption=up.name, use_container_width=True)
-                except Exception:
-                    cols[i % 4].write(up.name)
-
-    run_btn = st.button("Запустить обработку", type="primary", use_container_width=True)
-
-with right:
-    opaque_card("Параметры обучения", "Ключевые параметры обучения модели (вытягиваются из args.yaml).")
-    st.table(params_df)
-
-    st.divider()
-    opaque_card("Графики обучения", "Выберите метрики/лоссы — построим только то, что нужно.")
-    if results_df is None:
-        st.info("`results.csv` не найден или не читается.")
-    else:
-        # какие колонки предлагать
-        col_epoch = next((c for c in results_df.columns if c.lower() == "epoch"), None)
-        if col_epoch is None:
-            st.warning("В results.csv нет колонки `epoch`. Показываю таблицу.")
-            st.dataframe(results_df.tail(30), use_container_width=True)
-        else:
-            # кандидаты
-            candidates = []
-            keys = ["precision", "recall", "map50", "map50-95", "map50_95", "box_loss", "cls_loss", "dfl_loss"]
-            for c in results_df.columns:
-                cl = c.lower()
-                if any(k in cl for k in keys) and c != col_epoch:
-                    candidates.append(c)
-
-            # если кандидатов нет — просто таблица
-            if not candidates:
-                st.dataframe(results_df.tail(30), use_container_width=True)
-            else:
-                selected = st.multiselect(
-                    "Что построить",
-                    options=candidates,
-                    default=[candidates[0]],
-                )
-                if selected:
-                    chart_df = results_df[[col_epoch] + selected].copy()
-                    chart_df = chart_df.set_index(col_epoch)
-                    st.line_chart(chart_df, use_container_width=True)
-
-            # короткая “лучшая эпоха” по mAP, если есть
-            score_col = next((c for c in results_df.columns if "map50-95" in c.lower() or "map50_95" in c.lower()), None)
-            if score_col is None:
-                score_col = next((c for c in results_df.columns if "map50" in c.lower()), None)
-            if score_col:
-                try:
-                    best_idx = int(results_df[score_col].astype(float).idxmax())
-                    best_epoch = int(results_df.loc[best_idx, col_epoch])
-                    best_score = float(results_df.loc[best_idx, score_col])
-                    st.success(f"Лучшая эпоха по `{score_col}`: epoch={best_epoch}, score={best_score:.4f}")
-                except Exception:
-                    pass
+title_card("FaceScanner — маскировка лиц")
 
 
 # -----------------------------
-# Inference
+# 2) Загрузка (на всю ширину)
+# -----------------------------
+card("Загрузка изображений", "Загрузите один или несколько файлов")
+
+uploads = st.file_uploader(
+    "Загрузка изображений",
+    type=["png", "jpg", "jpeg", "bmp", "tif", "tiff"],
+    accept_multiple_files=True,
+    label_visibility="collapsed",
+)
+
+
+# -----------------------------
+# 3) Предпросмотр
+# -----------------------------
+if uploads:
+    with st.expander("Предпросмотр загруженных изображений", expanded=True):
+        cols = st.columns(4)
+        for i, up in enumerate(uploads):
+            try:
+                img = Image.open(up).convert("RGB")
+                cols[i % 4].image(img, use_container_width=True)
+                cols[i % 4].markdown(f'<div class="name-chip">{up.name}</div>', unsafe_allow_html=True)
+            except Exception:
+                cols[i % 4].markdown(f'<div class="name-chip">{up.name}</div>', unsafe_allow_html=True)
+
+
+# -----------------------------
+# 4) Запуск
+# -----------------------------
+run_btn = st.button("Запустить обработку", type="primary", use_container_width=True)
+
+
+# -----------------------------
+# 5) Результаты
 # -----------------------------
 if run_btn:
     if YOLO is None:
-        st.error("Не установлен пакет `ultralytics`.")
-        st.stop()
+        card("Сервис временно недоступен", "Модуль детекции не загружен в текущей сборке.")
+    elif (not WEIGHTS_PATH.exists()) or is_git_lfs_pointer(WEIGHTS_PATH):
+        card("Сервис временно недоступен", "Веса модели недоступны в текущей сборке.")
+    elif not uploads:
+        card("Нужно загрузить изображения", "Добавьте хотя бы один файл и повторите попытку.")
+    else:
+        with st.spinner("Выполняется обработка..."):
+            model = load_yolo_model(WEIGHTS_PATH.as_posix())
 
-    ensure_weights_ok_or_stop(WEIGHTS_PATH)
+        results_for_zip: List[Tuple[str, bytes]] = []
+        preview_rows = []
 
-    if not uploads:
-        st.warning("Загрузите хотя бы один файл.")
-        st.stop()
+        prog = st.progress(0)
+        for idx, up in enumerate(uploads, start=1):
+            try:
+                img = Image.open(up).convert("RGB")
+                img_np = np.array(img)
 
-    with st.spinner("Загружаю модель..."):
-        model = load_yolo_model(WEIGHTS_PATH.as_posix())
+                boxes = predict_boxes(model, img_np, conf=float(conf_th), iou=float(iou_th), max_det=int(max_det))
+                boxed = draw_boxes(img, boxes)
+                masked = apply_mask(img, boxes, mask_cfg)
 
-    results_for_zip: List[Tuple[str, bytes]] = []
-    preview_rows = []
+                buf = io.BytesIO()
+                masked.save(buf, format="PNG")
+                out_name = f"{Path(up.name).stem}_masked.png"
+                results_for_zip.append((out_name, buf.getvalue()))
 
-    prog = st.progress(0)
-    for idx, up in enumerate(uploads, start=1):
-        try:
-            img = Image.open(up).convert("RGB")
-            img_np = np.array(img)
+                preview_rows.append((up.name, img, boxed, masked, len(boxes)))
+            except Exception:
+                preview_rows.append((up.name, None, None, None, 0))
 
-            boxes = predict_boxes(model, img_np, conf=float(conf_th), iou=float(iou_th), max_det=int(max_det))
-            boxed = draw_boxes(img, boxes)
-            masked = apply_mask(img, boxes, mask_cfg)
+            prog.progress(int(idx / len(uploads) * 100))
+        prog.empty()
 
-            buf = io.BytesIO()
-            masked.save(buf, format="PNG")
-            buf.seek(0)
+        card("Результаты", "Просмотр и скачивание одним архивом")
 
-            out_name = f"{Path(up.name).stem}_masked.png"
-            results_for_zip.append((out_name, buf.getvalue()))
-            preview_rows.append((up.name, img, boxed, masked, len(boxes)))
-        except Exception as e:
-            st.error(f"Ошибка обработки {up.name}: {e}")
+        for name, orig, boxed, masked, n_boxes in preview_rows:
+            with st.expander(f"{name} — детекций: {n_boxes}", expanded=False):
+                c1, c2, c3 = st.columns(3, gap="large")
+                with c1:
+                    card("Оригинал", "")
+                    if orig is not None:
+                        st.image(orig, use_container_width=True)
+                with c2:
+                    card("Детекции", "")
+                    if boxed is not None:
+                        st.image(boxed, use_container_width=True)
+                with c3:
+                    card("Маскировано", "")
+                    if masked is not None:
+                        st.image(masked, use_container_width=True)
 
-        prog.progress(int(idx / len(uploads) * 100))
-    prog.empty()
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for fname, fbytes in results_for_zip:
+                zf.writestr(fname, fbytes)
+        zip_buf.seek(0)
 
-    opaque_card("Результаты", "Превью и скачивание ZIP.")
-    for name, orig, boxed, masked, n_boxes in preview_rows:
-        with st.expander(f"{name} — детекций: {n_boxes}", expanded=False):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown("**Оригинал**")
-                st.image(orig, use_container_width=True)
-            with c2:
-                st.markdown("**Детекции**")
-                st.image(boxed, use_container_width=True)
-            with c3:
-                st.markdown("**Маскировано**")
-                st.image(masked, use_container_width=True)
+        st.download_button(
+            "Скачать архив с результатами",
+            data=zip_buf,
+            file_name="facescanner_results.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
 
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for fname, fbytes in results_for_zip:
-            zf.writestr(fname, fbytes)
-    zip_buf.seek(0)
 
-    st.download_button(
-        "Скачать ZIP с результатами",
-        data=zip_buf,
-        file_name="facescanner_results.zip",
-        mime="application/zip",
-        use_container_width=True,
+# -----------------------------
+# 6) Качество модели (валидация): выбор показателей на одной подложке
+# -----------------------------
+st.divider()
+
+numeric_cols = []
+epoch_col = None
+if results_df is not None:
+    epoch_col = next((c for c in results_df.columns if str(c).lower() == "epoch"), None)
+    if epoch_col is not None:
+        numeric_cols = [c for c in results_df.columns if c != epoch_col and pd.api.types.is_numeric_dtype(results_df[c])]
+
+card("Показатели качества, рассчитанные на валидационной выборке", "Выберите показатели, которые нужно отобразить")
+
+selected = []
+if results_df is not None and epoch_col is not None and numeric_cols:
+    selected = st.multiselect(
+        "Показатели",
+        options=numeric_cols,
+        default=numeric_cols[:3],
+        label_visibility="collapsed",
     )
+
+card("Интерактивная визуализация динамики метрик", "")
+
+if results_df is None or epoch_col is None or not selected:
+    # Ничего не выводим “технического”: просто аккуратно показываем последние строки, если есть
+    if results_df is not None:
+        st.dataframe(results_df.tail(20), use_container_width=True)
+else:
+    # Графики + лучшие метрики в ряд
+    g_col, m_col = st.columns([1.35, 0.65], gap="large")
+
+    with g_col:
+        long = results_df[[epoch_col] + selected].melt(
+            id_vars=[epoch_col], var_name="Показатель", value_name="Значение"
+        )
+        chart = (
+            alt.Chart(long)
+            .mark_line()
+            .encode(
+                x=alt.X(f"{epoch_col}:Q", title="Эпоха"),
+                y=alt.Y("Значение:Q", title="Значение"),
+                color=alt.Color("Показатель:N", title=""),
+                tooltip=[
+                    alt.Tooltip(f"{epoch_col}:Q", title="Эпоха"),
+                    alt.Tooltip("Показатель:N", title="Показатель"),
+                    alt.Tooltip("Значение:Q", title="Значение", format=".6f"),
+                ],
+            )
+            .interactive()
+            .properties(height=CHART_H)
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+    with m_col:
+        # Лучшие метрики: mAP (максимум), лоссы (минимум)
+        best_lines: List[Tuple[str, float]] = []
+
+        def _best_max(col_sub: List[str], label: str):
+            col = next((c for c in results_df.columns if any(s in str(c).lower() for s in col_sub)), None)
+            if col is not None and pd.api.types.is_numeric_dtype(results_df[col]):
+                best_lines.append((label, float(results_df[col].max())))
+
+        def _best_min(col_sub: List[str], label: str):
+            col = next((c for c in results_df.columns if any(s in str(c).lower() for s in col_sub)), None)
+            if col is not None and pd.api.types.is_numeric_dtype(results_df[col]):
+                best_lines.append((label, float(results_df[col].min())))
+
+        _best_max(["map50-95", "map50_95"], "mAP50-95")
+        _best_max(["map50"], "mAP50")
+        _best_max(["precision"], "Precision")
+        _best_max(["recall"], "Recall")
+        _best_min(["box_loss"], "Box loss")
+        _best_min(["cls_loss"], "Cls loss")
+        _best_min(["dfl_loss"], "DFL loss")
+
+        if best_lines:
+            blocks = []
+            for label, value in best_lines[:5]:
+                blocks.append(
+                    f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>'
+                )
+            st.markdown(
+                f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3>{"".join(blocks)}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3><div class="muted">Недоступно</div></div>',
+                unsafe_allow_html=True,
+            )
+
+
+# -----------------------------
+# 7) Данные об обучении и параметры — одна подложка, в строку
+# -----------------------------
+st.divider()
+
+# Пытаемся взять количество эпох из results.csv, если оно есть
+epochs_text = params.get("Эпохи", "—")
+if results_df is not None and epoch_col is not None:
+    try:
+        epochs_text = str(int(results_df[epoch_col].max()) + 1)
+    except Exception:
+        pass
+
+model_text = params.get("Модель", "—")
+task_text = params.get("Задача", "—")
+batch_text = params.get("Batch", "—")
+imgsz_text = params.get("Размер изображения", "—")
+lr_text = params.get("Learning rate", "—")
+
+st.markdown(
+    f'<div class="opaque-card">'
+    f'<h3>Данные об обучении и параметры</h3>'
+    f'<div class="param-grid">'
+    f'<div class="param-cell"><div class="param-label">Задача</div><div class="param-val">{task_text}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Модель</div><div class="param-val">{model_text}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Количество эпох</div><div class="param-val">{epochs_text}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Batch</div><div class="param-val">{batch_text}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Размер изображения</div><div class="param-val">{imgsz_text}</div></div>'
+    f'<div class="param-cell"><div class="param-label">Learning rate</div><div class="param-val">{lr_text}</div></div>'
+    f'</div>'
+    f'</div>',
+    unsafe_allow_html=True,
+)
+
+
+# -----------------------------
+# Подпись — на подложке
+# -----------------------------
+st.divider()
+st.markdown(
+    '<div class="opaque-card"><p>Работу выполнили студенты Эльбруса — Игорь Никоновский и Сергей Белькин</p></div>',
+    unsafe_allow_html=True,
+)
