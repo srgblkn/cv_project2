@@ -5,7 +5,7 @@ import io
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import altair as alt
 import numpy as np
@@ -28,22 +28,22 @@ ART_DIR = THIS_DIR / "cancerbook"
 WEIGHTS_PATH = ART_DIR / "best.pt"
 ARGS_PATH = ART_DIR / "args.yaml"
 RESULTS_PATH = ART_DIR / "results.csv"
-BG_JPG_LIST = sorted(ART_DIR.glob("*.jpg"))  # фон: screen.jpg (или любой *.jpg)
+BG_JPG_LIST = sorted(ART_DIR.glob("*.jpg"))  # screen.jpg (или любой *.jpg)
 
 
 # -----------------------------
 # Конфиг UI
 # -----------------------------
-UPLOAD_BOX_H = 120
-CHART_H = 440
+UPLOAD_BOX_H = 120   # компактно (как вы просили: меньше по высоте)
+CHART_H = 440        # график + "лучшие метрики" одинаковой высоты
 
 st.set_page_config(page_title="Анализ снимков МРТ", page_icon="🧠", layout="wide")
 
 
 # -----------------------------
-# UI: стиль + подложки (всё по центру)
+# CSS / Подложки (всё по центру)
 # -----------------------------
-def apply_background_and_theme(bg_path: Path | None) -> None:
+def _inject_css(bg_path: Optional[Path]) -> None:
     bg_css = ""
     if bg_path and bg_path.exists():
         b64 = base64.b64encode(bg_path.read_bytes()).decode("utf-8")
@@ -56,22 +56,21 @@ def apply_background_and_theme(bg_path: Path | None) -> None:
             '}'
         )
 
-    st.markdown(
-        f"""
+    css = r"""
 <style>
-{bg_css}
+__BG_CSS__
 
-.stApp, .stMarkdown, .stText, .stCaption, .stWrite {{ color:#F8FAFC; }}
-header[data-testid="stHeader"] {{ background: rgba(0,0,0,0); }}
+.stApp, .stMarkdown, .stText, .stCaption, .stWrite { color:#F8FAFC; }
+header[data-testid="stHeader"] { background: rgba(0,0,0,0); }
 
-section[data-testid="stSidebar"] {{
+section[data-testid="stSidebar"]{
   background:#0B1220;
   border-right:1px solid rgba(255,255,255,0.10);
-}}
-section[data-testid="stSidebar"] * {{ color:#F8FAFC !important; }}
+}
+section[data-testid="stSidebar"] * { color:#F8FAFC !important; }
 
-/* Подложка: всё по центру */
-.opaque-card {{
+/* Подложка: все тексты по центру */
+.opaque-card{
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
   border-radius:18px;
@@ -79,93 +78,93 @@ section[data-testid="stSidebar"] * {{ color:#F8FAFC !important; }}
   box-shadow:0 10px 24px rgba(0,0,0,0.40);
   margin-bottom:14px;
   text-align:center;
-}}
-.opaque-card * {{ text-align:center; }}
+}
+.opaque-card * { text-align:center; }
 
-.opaque-card h1 {{
+.opaque-card h1{
   margin:0;
   font-size:2.0rem;
   font-weight:780;
   line-height:1.15;
-}}
-.opaque-card h3 {{
+}
+.opaque-card h3{
   margin:0;
   font-size:1.25rem;
   font-weight:750;
-}}
-.opaque-card p {{
+}
+.opaque-card p{
   margin:8px 0 0 0;
   color:rgba(248,250,252,0.85);
   line-height:1.35;
-}}
+}
 
-/* Экспандер: непрозрачный */
-div[data-testid="stExpander"] > details {{
+/* Экспандер */
+div[data-testid="stExpander"] > details{
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
   border-radius:18px;
   padding:10px 12px;
   box-shadow:0 10px 24px rgba(0,0,0,0.30);
-}}
-div[data-testid="stExpander"] summary {{
+}
+div[data-testid="stExpander"] summary{
   color:#F8FAFC !important;
   font-weight:650;
-}}
+}
 
 /* File uploader: фиксируем высоту */
-div[data-testid="stFileUploader"] section {{
-  height:{UPLOAD_BOX_H}px !important;
+div[data-testid="stFileUploader"] section{
+  height:__UPLOAD_BOX_H__px !important;
   overflow:auto !important;
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
   border-radius:18px;
   padding:10px;
-}}
+}
 
-/* TextArea: фиксируем высоту (для ссылок) */
-div[data-testid="stTextArea"] textarea {{
-  height:{UPLOAD_BOX_H}px !important;
-}}
-div[data-testid="stTextArea"] > div {{
+/* TextArea (ссылки): фиксируем высоту */
+div[data-testid="stTextArea"] textarea{
+  height:__UPLOAD_BOX_H__px !important;
+}
+div[data-testid="stTextArea"] > div{
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
   border-radius:18px;
   padding:10px;
-}}
+}
 
-.stButton > button {{
+.stButton > button{
   border-radius:14px;
   border:1px solid rgba(255,255,255,0.14);
-}}
+}
 
-a {{ color:#93C5FD !important; }}
+a{ color:#93C5FD !important; }
 
-/* Блок лучших метрик: фикс высоты, вертикальное центрирование */
-.metrics-card {{
-  height:{CHART_H}px;
+/* Лучшие метрики — высота как у графика + вертикальный центр */
+.metrics-card{
+  height:__CHART_H__px;
   display:flex;
   flex-direction:column;
   justify-content:center;
   align-items:center;
   gap:12px;
-}}
-.metric-line {{ line-height:1.2; }}
-.muted {{ color:rgba(248,250,252,0.70); font-size:0.95rem; }}
-.metric-value {{ font-size:1.45rem; font-weight:780; margin-top:4px; }}
+}
+.metric-line{ line-height:1.2; }
+.muted{ color:rgba(248,250,252,0.70); font-size:0.95rem; }
+.metric-value{ font-size:1.45rem; font-weight:780; margin-top:4px; }
 
-/* Параметры "в строку" */
-.param-grid {{
+/* Параметры в строку */
+.param-grid{
   display:grid;
   grid-template-columns: repeat(6, 1fr);
   gap:14px;
   margin-top:12px;
-}}
-.param-cell {{ background:transparent; border:none; padding:6px 4px; }}
-.param-label {{ color:rgba(248,250,252,0.70); font-size:0.92rem; margin-bottom:4px; }}
-.param-val {{ font-size:1.10rem; font-weight:780; color:rgba(248,250,252,0.95); }}
+}
+.param-cell{ background:transparent; border:none; padding:6px 4px; }
+.param-label{ color:rgba(248,250,252,0.70); font-size:0.92rem; margin-bottom:4px; }
+.param-val{ font-size:1.10rem; font-weight:780; color:rgba(248,250,252,0.95); }
 
-/* Мини-чип под превью */
-.name-chip {{
+/* Чип с именем файла */
+.name-chip{
   background:#0B1220;
   border:1px solid rgba(255,255,255,0.12);
   border-radius:12px;
@@ -174,19 +173,20 @@ a {{ color:#93C5FD !important; }}
   text-align:center;
   font-size:0.85rem;
   color:rgba(248,250,252,0.90);
-}}
+}
 </style>
-        """,
-        unsafe_allow_html=True,
-    )
+"""
+    css = css.replace("__BG_CSS__", bg_css)
+    css = css.replace("__UPLOAD_BOX_H__", str(UPLOAD_BOX_H))
+    css = css.replace("__CHART_H__", str(CHART_H))
+    st.markdown(css, unsafe_allow_html=True)
 
 
 def title_card(title: str) -> None:
     st.markdown(f'<div class="opaque-card"><h1>{title}</h1></div>', unsafe_allow_html=True)
 
 
-def card(title: str, text: str | None = None) -> None:
-    text = text or ""
+def card(title: str, text: str = "") -> None:
     st.markdown(f'<div class="opaque-card"><h3>{title}</h3><p>{text}</p></div>', unsafe_allow_html=True)
 
 
@@ -201,14 +201,14 @@ def safe_switch_page(target: str) -> None:
 # -----------------------------
 # Фон
 # -----------------------------
-bg_path: Path | None = None
+bg_path: Optional[Path] = None
 if len(BG_JPG_LIST) == 1:
     bg_path = BG_JPG_LIST[0]
 elif len(BG_JPG_LIST) > 1:
     bg_name = st.sidebar.selectbox("Фон страницы", options=[p.name for p in BG_JPG_LIST], index=0)
     bg_path = ART_DIR / bg_name
 
-apply_background_and_theme(bg_path)
+_inject_css(bg_path)
 
 
 # -----------------------------
@@ -238,6 +238,14 @@ def pick_first(args: Dict[str, str], keys: List[str]) -> str:
     return "—"
 
 
+def _find_col(df: pd.DataFrame, substrs: List[str]) -> Optional[str]:
+    for c in df.columns:
+        cl = str(c).lower()
+        if any(s in cl for s in substrs):
+            return c
+    return None
+
+
 def is_git_lfs_pointer(file_path: Path) -> bool:
     try:
         head = file_path.read_bytes()[:200]
@@ -245,14 +253,6 @@ def is_git_lfs_pointer(file_path: Path) -> bool:
         return "git-lfs" in txt and "git-lfs.github.com/spec" in txt
     except Exception:
         return False
-
-
-def _find_col(df: pd.DataFrame, substrs: List[str]) -> str | None:
-    for c in df.columns:
-        cl = str(c).lower()
-        if any(s in cl for s in substrs):
-            return c
-    return None
 
 
 # -----------------------------
@@ -264,10 +264,10 @@ def _download_url_bytes(url: str, timeout: int = 25) -> bytes:
         return resp.read()
 
 
-def _urls_from_text(text: str) -> list[str]:
+def _urls_from_text(text: str) -> List[str]:
     if not text:
         return []
-    out: list[str] = []
+    out: List[str] = []
     for line in text.splitlines():
         u = line.strip()
         if u:
@@ -275,8 +275,8 @@ def _urls_from_text(text: str) -> list[str]:
     return out
 
 
-def _payload_from_uploads(files) -> list[tuple[str, bytes]]:
-    out: list[tuple[str, bytes]] = []
+def _payload_from_uploads(files) -> List[Tuple[str, bytes]]:
+    out: List[Tuple[str, bytes]] = []
     if not files:
         return out
     for f in files:
@@ -287,8 +287,8 @@ def _payload_from_uploads(files) -> list[tuple[str, bytes]]:
     return out
 
 
-def _payload_from_urls(urls: list[str]) -> list[tuple[str, bytes]]:
-    out: list[tuple[str, bytes]] = []
+def _payload_from_urls(urls: List[str]) -> List[Tuple[str, bytes]]:
+    out: List[Tuple[str, bytes]] = []
     for u in urls:
         try:
             b = _download_url_bytes(u)
@@ -310,7 +310,7 @@ def load_yolo_model(weights_path: str):
     return YOLO(weights_path)
 
 
-def draw_boxes(img: Image.Image, boxes_xyxy: list[tuple[int, int, int, int]], labels: list[str] | None = None) -> Image.Image:
+def draw_boxes(img: Image.Image, boxes_xyxy: List[Tuple[int, int, int, int]], labels: Optional[List[str]] = None) -> Image.Image:
     out = img.copy()
     d = ImageDraw.Draw(out)
     for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
@@ -321,9 +321,9 @@ def draw_boxes(img: Image.Image, boxes_xyxy: list[tuple[int, int, int, int]], la
 
 
 def extract_predictions(result):
-    boxes_xyxy: list[tuple[int, int, int, int]] = []
-    box_labels: list[str] = []
-    cls_df = None
+    boxes_xyxy: List[Tuple[int, int, int, int]] = []
+    box_labels: List[str] = []
+    cls_df: Optional[pd.DataFrame] = None
 
     if getattr(result, "boxes", None) is not None and len(result.boxes) > 0:
         xyxy = result.boxes.xyxy.detach().cpu().numpy()
@@ -354,18 +354,15 @@ def extract_predictions(result):
 
 
 # -----------------------------
-# Сайдбар: навигация + настройки (русский)
+# Сайдбар: навигация + настройки (всё по-русски)
 # -----------------------------
 if st.sidebar.button("На главную", use_container_width=True):
     safe_switch_page("app.py")
 
 st.sidebar.divider()
-
 conf_th = st.sidebar.slider("Порог уверенности", 0.05, 0.95, 0.25, 0.05)
 iou_th = st.sidebar.slider("Порог IoU", 0.10, 0.90, 0.50, 0.05)
-
 st.sidebar.divider()
-
 show_boxes = st.sidebar.toggle("Показывать боксы", value=True)
 export_mode = st.sidebar.selectbox("Экспорт", ["Архив (изображения)", "Архив (изображения + CSV)"], index=1)
 
@@ -401,7 +398,7 @@ with u2:
         height=UPLOAD_BOX_H,
     )
 
-payload: list[tuple[str, bytes]] = []
+payload: List[Tuple[str, bytes]] = []
 payload.extend(_payload_from_uploads(uploads))
 payload.extend(_payload_from_urls(_urls_from_text(urls_text)))
 
@@ -428,18 +425,24 @@ run_btn = st.button("Запустить анализ", type="primary", use_conta
 
 
 # -----------------------------
-# Инференс
+# Инференс (без "технических" сообщений)
 # -----------------------------
 if run_btn:
-    service_ok = (YOLO is not None) and WEIGHTS_PATH.exists() and (not is_git_lfs_pointer(WEIGHTS_PATH)) and bool(payload)
+    service_ok = (
+        YOLO is not None
+        and WEIGHTS_PATH.exists()
+        and (not is_git_lfs_pointer(WEIGHTS_PATH))
+        and bool(payload)
+    )
+
     if not service_ok:
         card("Сервис временно недоступен", "Проверьте загрузку изображений и повторите попытку позже")
     else:
         with st.spinner("Выполняется анализ..."):
             model = load_yolo_model(WEIGHTS_PATH.as_posix())
 
-        processed: list[tuple[str, bytes]] = []
-        csv_rows: list[dict] = []
+        processed: List[Tuple[str, bytes]] = []
+        csv_rows: List[dict] = []
         preview_rows = []
 
         prog = st.progress(0)
@@ -478,7 +481,6 @@ if run_btn:
                 processed.append((out_name, buf.getvalue()))
 
                 preview_rows.append((name, img, view, cls_df, len(boxes)))
-
             except Exception:
                 preview_rows.append((name, None, None, None, 0))
 
@@ -521,19 +523,19 @@ if run_btn:
 
 
 # -----------------------------
-# Модель и качество (валидация)
+# Модель и качество (валидация): один график с подписями осей + PR-AUC/ROC-AUC + confusion matrix по лучшей эпохе
 # -----------------------------
 st.divider()
 
-results_df: pd.DataFrame | None = None
+results_df: Optional[pd.DataFrame] = None
 if RESULTS_PATH.exists():
     try:
         results_df = pd.read_csv(RESULTS_PATH)
     except Exception:
         results_df = None
 
-df_plot: pd.DataFrame | None = None
-epoch_col = None
+df_plot: Optional[pd.DataFrame] = None
+epoch_col: Optional[str] = None
 
 if results_df is not None:
     df_plot = results_df.copy()
@@ -542,9 +544,8 @@ if results_df is not None:
     col_precision = _find_col(df_plot, ["precision"])
     col_recall = _find_col(df_plot, ["recall"])
     col_map50 = _find_col(df_plot, ["map50"])
-    col_map5095 = _find_col(df_plot, ["map50-95", "map50_95"])
 
-    # PR-AUC для детекции (AP@0.5) — из mAP50
+    # PR-AUC для детекции: берём AP@0.5 (mAP50)
     if col_map50 is not None and "PR-AUC" not in df_plot.columns:
         df_plot["PR-AUC"] = pd.to_numeric(df_plot[col_map50], errors="coerce")
 
@@ -560,26 +561,13 @@ if df_plot is None or epoch_col is None:
     if results_df is not None:
         st.dataframe(results_df.tail(20), use_container_width=True)
 else:
-    y_candidates = [
-        c for c in df_plot.columns
-        if c != epoch_col and pd.api.types.is_numeric_dtype(df_plot[c])
-    ]
+    y_candidates = [c for c in df_plot.columns if c != epoch_col and pd.api.types.is_numeric_dtype(df_plot[c])]
 
-    # дефолт: PR-AUC, иначе mAP50-95, иначе первый числовой
-    default_y = None
-    if "PR-AUC" in y_candidates:
-        default_y = "PR-AUC"
-    else:
-        c5095 = _find_col(df_plot, ["map50-95", "map50_95"])
-        if c5095 in y_candidates:
-            default_y = c5095
-        elif y_candidates:
-            default_y = y_candidates[0]
-
+    default_y = "PR-AUC" if "PR-AUC" in y_candidates else (y_candidates[0] if y_candidates else None)
     y_axis = st.selectbox(
         "Показатель",
         options=y_candidates,
-        index=y_candidates.index(default_y) if default_y in y_candidates else 0,
+        index=y_candidates.index(default_y) if (default_y in y_candidates) else 0,
         label_visibility="collapsed",
     )
 
@@ -623,14 +611,11 @@ else:
             except Exception:
                 best_epoch_val = None
 
-        def _val(col_sub: list[str] | str) -> float | None:
+        def _val(col_sub: List[str] | str) -> Optional[float]:
             if best_row is None:
                 return None
-            if isinstance(col_sub, str):
-                col = col_sub if col_sub in best_row.columns else None
-            else:
-                col = _find_col(best_row, col_sub)
-            if col is None:
+            col = col_sub if isinstance(col_sub, str) else _find_col(best_row, col_sub)
+            if col is None or col not in best_row.columns:
                 return None
             try:
                 v = float(pd.to_numeric(best_row.iloc[0][col], errors="coerce"))
@@ -638,7 +623,7 @@ else:
             except Exception:
                 return None
 
-        lines: list[tuple[str, float]] = []
+        lines: List[Tuple[str, float]] = []
 
         pr = _val("PR-AUC")
         if pr is not None:
@@ -648,10 +633,6 @@ else:
         if roc is not None:
             lines.append(("ROC-AUC", roc))
 
-        m5095 = _val(["map50-95", "map50_95"])
-        if m5095 is not None:
-            lines.append(("mAP50-95", m5095))
-
         prec = _val(["precision"])
         if prec is not None:
             lines.append(("Precision", prec))
@@ -660,10 +641,6 @@ else:
         if rec is not None:
             lines.append(("Recall", rec))
 
-        box_loss = _val(["box_loss"])
-        if box_loss is not None:
-            lines.append(("Box loss", box_loss))
-
         blocks = []
         for label, value in lines[:6]:
             blocks.append(
@@ -671,13 +648,14 @@ else:
             )
 
         epoch_txt = f"{best_epoch_val}" if best_epoch_val is not None else "—"
-        st.markdown(
-            f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3>'
+        html = (
+            '<div class="opaque-card metrics-card">'
+            '<h3>Лучшие метрики</h3>'
             f'<div class="muted">Лучшая эпоха: {epoch_txt}</div>'
-            f'{"".join(blocks) if blocks else "<div class=\\"muted\\">Недоступно</div>"}'
-            f'</div>',
-            unsafe_allow_html=True,
+            + ("".join(blocks) if blocks else '<div class="muted">Недоступно</div>')
+            + "</div>"
         )
+        st.markdown(html, unsafe_allow_html=True)
 
     # Confusion Matrix по лучшей эпохе (оценка по precision/recall лучшей эпохи)
     st.markdown(
@@ -717,7 +695,11 @@ else:
     TN = max(0.0, N - FP)
 
     cm_df = pd.DataFrame(
-        {"Факт": ["Область", "Область", "Фон", "Фон"], "Прогноз": ["Область", "Фон", "Область", "Фон"], "Значение": [TP, FN, FP, TN]}
+        {
+            "Факт": ["Область", "Область", "Фон", "Фон"],
+            "Прогноз": ["Область", "Фон", "Область", "Фон"],
+            "Значение": [TP, FN, FP, TN],
+        }
     )
 
     heat = (
@@ -738,9 +720,14 @@ else:
     txt = (
         alt.Chart(cm_df)
         .mark_text()
-        .encode(x="Прогноз:N", y="Факт:N", text=alt.Text("Значение:Q", format=".0f"))
+        .encode(
+            x="Прогноз:N",
+            y="Факт:N",
+            text=alt.Text("Значение:Q", format=".0f"),
+        )
         .properties(height=320)
     )
+
     st.altair_chart((heat + txt).interactive(), use_container_width=True)
 
 
@@ -760,17 +747,16 @@ params = {
 }
 
 st.markdown(
-    f'<div class="opaque-card">'
-    f'<h3>Данные об обучении и параметры</h3>'
-    f'<div class="param-grid">'
+    '<div class="opaque-card">'
+    '<h3>Данные об обучении и параметры</h3>'
+    '<div class="param-grid">'
     f'<div class="param-cell"><div class="param-label">Задача</div><div class="param-val">{params["Задача"]}</div></div>'
     f'<div class="param-cell"><div class="param-label">Модель</div><div class="param-val">{params["Модель"]}</div></div>'
     f'<div class="param-cell"><div class="param-label">Количество эпох</div><div class="param-val">{params["Эпохи"]}</div></div>'
     f'<div class="param-cell"><div class="param-label">Batch</div><div class="param-val">{params["Batch"]}</div></div>'
     f'<div class="param-cell"><div class="param-label">Размер изображения</div><div class="param-val">{params["Размер изображения"]}</div></div>'
     f'<div class="param-cell"><div class="param-label">Learning rate</div><div class="param-val">{params["Learning rate"]}</div></div>'
-    f'</div>'
-    f'</div>',
+    "</div></div>",
     unsafe_allow_html=True,
 )
 
