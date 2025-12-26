@@ -32,10 +32,10 @@ st.set_page_config(page_title="Сегментация аэрокосмическ
 
 
 # -----------------------------
-# Дизайн (фиксируем высоты)
+# Дизайн
 # -----------------------------
-UPLOAD_BOX_H = 90   # ~в 3 раза меньше, чем было (260)
-CHART_H = 340       # одинаковая высота графика и подложки "лучшие метрики"
+UPLOAD_BOX_H = 90   # компактно (в ~3 раза меньше исходного)
+CHART_H = 340       # одинаковая высота графика и "лучшие метрики"
 
 
 def apply_background_and_theme(bg_path: Path) -> None:
@@ -116,7 +116,6 @@ def apply_background_and_theme(bg_path: Path) -> None:
             border-radius: 18px;
             padding: 10px;
         }}
-
         div[data-testid="stTextArea"] textarea {{
             height: {UPLOAD_BOX_H}px !important;
         }}
@@ -154,6 +153,31 @@ def apply_background_and_theme(bg_path: Path) -> None:
             margin-top: 4px;
         }}
 
+        /* "Табличные" ячейки в строку (без границ) */
+        .kpi-row {{
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-top: 10px;
+        }}
+        .kpi-cell {{
+            min-width: 140px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(255,255,255,0.06);
+        }}
+        .kpi-title {{
+            color: rgba(248,250,252,0.70);
+            font-size: 0.92rem;
+            margin-bottom: 4px;
+        }}
+        .kpi-val {{
+            font-weight: 780;
+            font-size: 1.05rem;
+            color: rgba(248,250,252,0.95);
+        }}
+
         a {{ color: #93C5FD !important; }}
         </style>
         """,
@@ -167,9 +191,12 @@ def title_card(title: str) -> None:
 
 def card(title: str, text: str | None = None) -> None:
     text = text or ""
-    # ВАЖНО: без отступов в начале строк, чтобы Markdown не превращал HTML в code-block
-    html = f'<div class="opaque-card"><h3>{title}</h3><p>{text}</p></div>'
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(f'<div class="opaque-card"><h3>{title}</h3><p>{text}</p></div>', unsafe_allow_html=True)
+
+
+def card_html(html_inner: str) -> None:
+    # Передавайте сюда только “внутренности” карточки без начальных отступов в строках
+    st.markdown(f'<div class="opaque-card">{html_inner}</div>', unsafe_allow_html=True)
 
 
 def safe_switch_page(target: str) -> None:
@@ -186,7 +213,6 @@ apply_background_and_theme(BG_JPG)
 # -----------------------------
 # Sidebar
 # -----------------------------
-card("Навигация", "Переходы и параметры инференса находятся слева.")
 if st.sidebar.button("На главную", use_container_width=True):
     safe_switch_page("app.py")
 
@@ -202,7 +228,7 @@ export_mode = st.sidebar.selectbox("Экспорт", ["ZIP (маски + нал�
 
 
 # -----------------------------
-# Загрузка по ссылкам
+# Загрузка изображений
 # -----------------------------
 def _download_url_bytes(url: str, timeout: int = 25) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
@@ -213,12 +239,7 @@ def _download_url_bytes(url: str, timeout: int = 25) -> bytes:
 def _urls_from_text(text: str) -> list[str]:
     if not text:
         return []
-    out = []
-    for line in text.splitlines():
-        u = line.strip()
-        if u:
-            out.append(u)
-    return out
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
 
 def _load_images_from_uploads(files) -> list[tuple[str, Image.Image]]:
@@ -307,7 +328,6 @@ def load_weights_into_model(model, weights_path: Path):
     import torch
 
     ckpt = torch.load(weights_path.as_posix(), map_location="cpu")
-
     if hasattr(ckpt, "state_dict") and callable(getattr(ckpt, "state_dict")):
         return ckpt
 
@@ -414,14 +434,10 @@ def find_metric_col(df: pd.DataFrame, substrs: list[str]) -> str | None:
 
 
 # -----------------------------
-# 1) Заголовок (подложка)
+# UI layout
 # -----------------------------
 title_card("Сегментация аэрокосмических снимков")
 
-
-# -----------------------------
-# 2) Загрузка (подложка) + два блока одинаковой высоты
-# -----------------------------
 card("Загрузка изображений", "Загрузите изображения файлами и/или добавьте прямые ссылки")
 
 u_cols = st.columns([1, 1], gap="large")
@@ -433,7 +449,6 @@ with u_cols[0]:
         accept_multiple_files=True,
         label_visibility="collapsed",
     )
-
 with u_cols[1]:
     card("Загрузка по ссылкам", "")
     img_urls_text = st.text_area(
@@ -447,162 +462,149 @@ images = []
 images.extend(_load_images_from_uploads(img_files))
 images.extend(_load_images_from_urls(_urls_from_text(img_urls_text)))
 
-
-# -----------------------------
-# 3) Предпросмотр (экспандер на подложке)
-# -----------------------------
 if images:
     with st.expander("Предпросмотр загруженных изображений", expanded=True):
         cols = st.columns(4)
         for i, (name, img) in enumerate(images):
             cols[i % 4].image(img, caption=name, use_container_width=True)
 
-
-# -----------------------------
-# 4) Запуск
-# -----------------------------
 run_btn = st.button("Запустить сегментацию", type="primary", use_container_width=True)
 
+if run_btn and images:
+    import torch
 
-# -----------------------------
-# 5) Результаты
-# -----------------------------
-if run_btn:
-    if not images:
-        st.warning("Добавьте изображения файлами и/или ссылками.")
-    else:
-        import torch
+    with st.spinner("Выполняется сегментация..."):
+        model, _model_name = load_model_cached(MODEL_PY.as_posix(), WEIGHTS_PTH.as_posix())
 
-        with st.spinner("Выполняется сегментация..."):
-            model, model_name = load_model_cached(MODEL_PY.as_posix(), WEIGHTS_PTH.as_posix())
+    results_for_zip = []
+    preview_rows = []
 
-        results_for_zip = []
-        preview_rows = []
+    prog = st.progress(0)
+    for idx, (name, orig) in enumerate(images, start=1):
+        resized = orig.resize((img_size, img_size), resample=Image.BILINEAR)
+        x = to_tensor_rgb(resized)
 
-        prog = st.progress(0)
-        for idx, (name, orig) in enumerate(images, start=1):
-            resized = orig.resize((img_size, img_size), resample=Image.BILINEAR)
-            x = to_tensor_rgb(resized)
+        with torch.no_grad():
+            y = model(x)
 
-            with torch.no_grad():
-                y = model(x)
+        prob_small = logits_to_prob_binary(y).detach().cpu().numpy()
+        mask_small = (prob_small > float(threshold)).astype(np.float32)
 
-            prob_small = logits_to_prob_binary(y).detach().cpu().numpy()
-            mask_small = (prob_small > float(threshold)).astype(np.float32)
-
-            mask_img = Image.fromarray((mask_small * 255).astype(np.uint8), mode="L").resize(
-                orig.size, resample=Image.NEAREST
-            )
-            mask01_orig = (np.array(mask_img).astype(np.float32) / 255.0)
-
-            overlay = overlay_mask(orig, mask01_orig, alpha_=float(alpha))
-
-            stem = Path(name).stem
-            if export_mode == "ZIP (маски + наложение)":
-                results_for_zip.append((f"{stem}_маска.png", mask_png_bytes(mask01_orig)))
-                results_for_zip.append((f"{stem}_наложение.png", img_png_bytes(overlay)))
-            else:
-                results_for_zip.append((f"{stem}_маска.png", mask_png_bytes(mask01_orig)))
-
-            coverage = float(mask01_orig.mean())
-            preview_rows.append((name, orig, overlay, coverage))
-
-            prog.progress(int(idx / len(images) * 100))
-        prog.empty()
-
-        card("Результаты", "Превью и выгрузка результатов одним архивом.")
-        for name, orig, overlay, cov in preview_rows:
-            with st.expander(f"{name} — доля маски: {cov * 100:.1f}%", expanded=False):
-                c1, c2 = st.columns(2, gap="large")
-                with c1:
-                    card("Оригинал", "")
-                    st.image(orig, use_container_width=True)
-                with c2:
-                    card("Наложение маски", "")
-                    st.image(overlay, use_container_width=True)
-
-        zip_buf = io.BytesIO()
-        with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for fname, fbytes in results_for_zip:
-                zf.writestr(fname, fbytes)
-        zip_buf.seek(0)
-
-        st.download_button(
-            "Скачать архив с результатами",
-            data=zip_buf,
-            file_name="результаты_сегментации.zip",
-            mime="application/zip",
-            use_container_width=True,
+        mask_img = Image.fromarray((mask_small * 255).astype(np.uint8), mode="L").resize(
+            orig.size, resample=Image.NEAREST
         )
+        mask01_orig = (np.array(mask_img).astype(np.float32) / 255.0)
+        overlay = overlay_mask(orig, mask01_orig, alpha_=float(alpha))
 
-
-# -----------------------------
-# 6) Качество модели (низ страницы): всё на подложках
-# -----------------------------
-st.divider()
-card("Показатели качества, рассчитаные на валидационной выборке", "Графики и ключевые метрики обучения.")
-
-log_df = load_training_log(TRAIN_LOG)
-if log_df is None:
-    st.info("Данные обучения недоступны.")
-else:
-    epoch_col = pick_epoch_col(log_df)
-
-    val_loss_col = find_metric_col(log_df, ["val", "valid", "validation", "loss"])
-    iou_col = find_metric_col(log_df, ["iou", "jaccard"])
-    dice_col = find_metric_col(log_df, ["dice"])
-    roc_col = find_metric_col(log_df, ["roc"])
-    pr_col = find_metric_col(log_df, ["pr", "ap", "average_precision"])
-
-    # Выбор показателей — тоже подложка
-    card("Выбор графиков", "Выберите показатели, которые нужно отобразить.")
-    selected = []
-    if epoch_col is not None:
-        numeric_cols = [
-            c for c in log_df.columns
-            if c != epoch_col and pd.api.types.is_numeric_dtype(log_df[c])
-        ]
-        if numeric_cols:
-            selected = st.multiselect(
-                "Показатели",
-                options=numeric_cols,
-                default=numeric_cols[:3],
-                label_visibility="collapsed",
-            )
-
-    # Ряд: график + лучшие метрики (одной высоты)
-    g_col, m_col = st.columns([1.35, 0.65], gap="large")
-
-    with g_col:
-        card("Графики обучения", "Интерактивная визуализация динамики метрик.")
-        if epoch_col is None or not selected:
-            st.dataframe(log_df.tail(30), use_container_width=True)
+        stem = Path(name).stem
+        if export_mode == "ZIP (маски + наложение)":
+            results_for_zip.append((f"{stem}_маска.png", mask_png_bytes(mask01_orig)))
+            results_for_zip.append((f"{stem}_наложение.png", img_png_bytes(overlay)))
         else:
-            long = log_df[[epoch_col] + selected].melt(
-                id_vars=[epoch_col], var_name="Показатель", value_name="Значение"
-            )
-            chart = (
-                alt.Chart(long)
-                .mark_line()
-                .encode(
-                    x=alt.X(f"{epoch_col}:Q", title="Эпоха"),
-                    y=alt.Y("Значение:Q", title="Значение"),
-                    color=alt.Color("Показатель:N", title=""),
-                    tooltip=[
-                        alt.Tooltip(f"{epoch_col}:Q", title="Эпоха"),
-                        alt.Tooltip("Показатель:N", title="Показатель"),
-                        alt.Tooltip("Значение:Q", title="Значение", format=".6f"),
-                    ],
-                )
-                .interactive()
-                .properties(height=CHART_H)
-            )
-            st.altair_chart(chart, use_container_width=True)
+            results_for_zip.append((f"{stem}_маска.png", mask_png_bytes(mask01_orig)))
 
-    with m_col:
-        # Лучшие метрики: лосс минимум, метрики максимум
+        coverage = float(mask01_orig.mean())
+        preview_rows.append((name, orig, overlay, coverage))
+        prog.progress(int(idx / len(images) * 100))
+    prog.empty()
+
+    card("Результаты", "Превью и выгрузка результатов одним архивом.")
+    for name, orig, overlay, cov in preview_rows:
+        with st.expander(f"{name} — доля маски: {cov * 100:.1f}%", expanded=False):
+            c1, c2 = st.columns(2, gap="large")
+            with c1:
+                card("Оригинал", "")
+                st.image(orig, use_container_width=True)
+            with c2:
+                card("Наложение маски", "")
+                st.image(overlay, use_container_width=True)
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fname, fbytes in results_for_zip:
+            zf.writestr(fname, fbytes)
+    zip_buf.seek(0)
+
+    st.download_button(
+        "Скачать архив с результатами",
+        data=zip_buf,
+        file_name="результаты_сегментации.zip",
+        mime="application/zip",
+        use_container_width=True,
+    )
+
+st.divider()
+
+# -----------------------------
+# Качество: 1 подложка (заголовок + выбор показателей)
+# -----------------------------
+log_df = load_training_log(TRAIN_LOG)
+epoch_col = pick_epoch_col(log_df) if log_df is not None else None
+
+selected = []
+if log_df is not None and epoch_col is not None:
+    numeric_cols = [
+        c for c in log_df.columns
+        if c != epoch_col and pd.api.types.is_numeric_dtype(log_df[c])
+    ]
+else:
+    numeric_cols = []
+
+# Одна подложка: заголовок + селект
+card_html(
+    '<h3>Показатели качества, рассчитаные на валидационной выборке</h3>'
+    '<p style="margin-top:10px;margin-bottom:0;">Выберите показатели, которые нужно отобразить</p>'
+)
+
+if numeric_cols:
+    selected = st.multiselect("Показатели", options=numeric_cols, default=numeric_cols[:3], label_visibility="collapsed")
+
+# -----------------------------
+# Подложка на всю ширину: "Интерактивная визуализация..."
+# Ниже: графики слева, лучшие метрики справа
+# -----------------------------
+card("Интерактивная визуализация динамики метрик", "")
+
+g_col, m_col = st.columns([1.35, 0.65], gap="large")
+
+with g_col:
+    if log_df is None or epoch_col is None or not selected:
+        with st.expander("Таблица (фрагмент)", expanded=True):
+            if log_df is not None:
+                st.dataframe(log_df.tail(30), use_container_width=True)
+            else:
+                st.write("—")
+    else:
+        long = log_df[[epoch_col] + selected].melt(id_vars=[epoch_col], var_name="Показатель", value_name="Значение")
+        chart = (
+            alt.Chart(long)
+            .mark_line()
+            .encode(
+                x=alt.X(f"{epoch_col}:Q", title="Эпоха"),
+                y=alt.Y("Значение:Q", title="Значение"),
+                color=alt.Color("Показатель:N", title=""),
+                tooltip=[
+                    alt.Tooltip(f"{epoch_col}:Q", title="Эпоха"),
+                    alt.Tooltip("Показатель:N", title="Показатель"),
+                    alt.Tooltip("Значение:Q", title="Значение", format=".6f"),
+                ],
+            )
+            .interactive()
+            .properties(height=CHART_H)
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+with m_col:
+    if log_df is None:
+        st.markdown(f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3><div class="muted">—</div></div>', unsafe_allow_html=True)
+    else:
+        val_loss_col = find_metric_col(log_df, ["val", "valid", "validation", "loss"])
+        iou_col = find_metric_col(log_df, ["iou", "jaccard"])
+        dice_col = find_metric_col(log_df, ["dice"])
+        roc_col = find_metric_col(log_df, ["roc"])
+        pr_col = find_metric_col(log_df, ["pr", "ap", "average_precision"])
+
         best_lines = []
-
         if val_loss_col is not None:
             best_lines.append(("Валидационный лосс", float(log_df[val_loss_col].min())))
         if iou_col is not None:
@@ -614,50 +616,43 @@ else:
         if pr_col is not None:
             best_lines.append(("PR-AUC", float(log_df[pr_col].max())))
 
-        # ВАЖНО: никаких отступов в начале строк => HTML не превратится в code-block
         if best_lines:
             blocks = []
             for label, value in best_lines[:5]:
-                blocks.append(
-                    f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>'
-                )
+                blocks.append(f'<div class="metric-line"><div class="muted">{label}</div><div class="metric-value">{value:.4f}</div></div>')
             st.markdown(
                 f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3>{"".join(blocks)}</div>',
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3><div class="muted">Нет доступных метрик в журнале обучения</div></div>',
+                f'<div class="opaque-card metrics-card"><h3>Лучшие метрики</h3><div class="muted">Нет доступных метрик</div></div>',
                 unsafe_allow_html=True,
             )
 
-
 # -----------------------------
-# 7) Данные об обучении (самый низ) — тоже на подложке
+# Низ: одна подложка (данные об обучении + параметры в строку)
 # -----------------------------
 st.divider()
-card("Данные об обучении", "Сводные параметры эксперимента.")
 
-train_df = load_training_log(TRAIN_LOG)
+train_df = log_df
 epochs_text = "—"
 if train_df is not None:
-    epoch_col = pick_epoch_col(train_df)
     if epoch_col is not None and pd.api.types.is_numeric_dtype(train_df[epoch_col]):
         epochs_text = str(int(train_df[epoch_col].max()) + 1)
     else:
         epochs_text = str(len(train_df))
 
+def _safe_last(df: pd.DataFrame, col: str) -> str:
+    try:
+        return str(df.tail(1).iloc[0][col])
+    except Exception:
+        return "—"
+
 batch_text = "—"
 imgsz_text = "—"
 lr_text = "—"
 opt_text = "—"
-
-def _safe_last(df: pd.DataFrame, col: str) -> str:
-    try:
-        v = df.tail(1).iloc[0][col]
-        return str(v)
-    except Exception:
-        return "—"
 
 if train_df is not None and len(train_df) > 0:
     batch_col = find_metric_col(train_df, ["batch"])
@@ -679,18 +674,18 @@ try:
 except Exception:
     model_name_bottom = "—"
 
-st.markdown(
-    f'<div class="opaque-card">'
-    f'<h3>Параметры</h3>'
-    f'<div class="metric-line"><div class="muted">Модель</div><div class="metric-value">{model_name_bottom}</div></div>'
-    f'<div class="metric-line"><div class="muted">Количество эпох</div><div class="metric-value">{epochs_text}</div></div>'
-    f'<div class="metric-line"><div class="muted">Размер изображения</div><div class="metric-value">{imgsz_text}</div></div>'
-    f'<div class="metric-line"><div class="muted">Batch</div><div class="metric-value">{batch_text}</div></div>'
-    f'<div class="metric-line"><div class="muted">Learning rate</div><div class="metric-value">{lr_text}</div></div>'
-    f'<div class="metric-line"><div class="muted">Оптимизатор</div><div class="metric-value">{opt_text}</div></div>'
-    f'</div>',
-    unsafe_allow_html=True,
+kpis_html = (
+    '<h3>Данные об обучении и параметры</h3>'
+    '<div class="kpi-row">'
+    f'<div class="kpi-cell"><div class="kpi-title">Модель</div><div class="kpi-val">{model_name_bottom}</div></div>'
+    f'<div class="kpi-cell"><div class="kpi-title">Эпохи</div><div class="kpi-val">{epochs_text}</div></div>'
+    f'<div class="kpi-cell"><div class="kpi-title">Размер изображения</div><div class="kpi-val">{imgsz_text}</div></div>'
+    f'<div class="kpi-cell"><div class="kpi-title">Batch</div><div class="kpi-val">{batch_text}</div></div>'
+    f'<div class="kpi-cell"><div class="kpi-title">Learning rate</div><div class="kpi-val">{lr_text}</div></div>'
+    f'<div class="kpi-cell"><div class="kpi-title">Оптимизатор</div><div class="kpi-val">{opt_text}</div></div>'
+    '</div>'
 )
+card_html(kpis_html)
 
 st.divider()
 st.markdown(
