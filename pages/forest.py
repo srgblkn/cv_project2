@@ -12,7 +12,6 @@ import streamlit as st
 import altair as alt
 from PIL import Image
 
-
 # -----------------------------
 # Пути (строго под вашу структуру)
 # cv_project2/pages/forest.py
