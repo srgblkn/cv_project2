@@ -438,7 +438,7 @@ def find_metric_col(df: pd.DataFrame, substrs: list[str]) -> str | None:
 # -----------------------------
 title_card("Сегментация аэрокосмических снимков")
 
-card("Загрузка изображений", "Загрузите изображения файлами и/или добавьте прямые ссылки")
+card("Загрузка изображений")
 
 u_cols = st.columns([1, 1], gap="large")
 with u_cols[0]:
